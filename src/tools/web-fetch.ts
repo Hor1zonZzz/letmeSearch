@@ -112,7 +112,6 @@ export const webFetch = defineTool({
 			content: v.string(),
 			contentType: v.picklist(['raw', 'compressed', 'fallback_excerpt']),
 			fetchedCharacters: v.number(),
-			possiblyTruncated: v.boolean(),
 		})),
 		missingUrls: v.array(v.string()),
 	}),
@@ -152,7 +151,6 @@ export const webFetch = defineTool({
 					content: sourceText,
 					contentType: 'raw' as const,
 					fetchedCharacters: fullText.length,
-					possiblyTruncated: fullText.length > MAX_SOURCE_CHARACTERS,
 				};
 			}
 
@@ -163,7 +161,6 @@ export const webFetch = defineTool({
 					content: await compressContent(input.query, title, url, sourceText, signal),
 					contentType: 'compressed' as const,
 					fetchedCharacters: fullText.length,
-					possiblyTruncated: fullText.length > MAX_SOURCE_CHARACTERS,
 				};
 			} catch (error) {
 				if (signal?.aborted) throw error;
@@ -173,7 +170,6 @@ export const webFetch = defineTool({
 					content: fallbackExcerpt(sourceText),
 					contentType: 'fallback_excerpt' as const,
 					fetchedCharacters: fullText.length,
-					possiblyTruncated: fullText.length > MAX_SOURCE_CHARACTERS,
 				};
 			}
 		}));
