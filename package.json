@@ -9,6 +9,7 @@
     "agent": "flue run hello-world --target node",
     "workflow": "flue run summarize --target node",
     "search": "flue run agentic-search --target node",
+    "news:pull": "flue run official-news-pull --target node --input '{\"maxPostsPerAccount\":5}'",
     "test": "vitest run tests/unit"
   },
   "keywords": [],

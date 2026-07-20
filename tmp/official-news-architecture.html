@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>官方 AI 快讯 Agent｜看图理解当前架构</title>
+    <style>
+      :root {
+        --bg: #07111f;
+        --panel: #0d1b2d;
+        --panel-2: #12243a;
+        --line: #29415f;
+        --text: #edf6ff;
+        --muted: #9db1c8;
+        --cyan: #4de3ff;
+        --blue: #6f8cff;
+        --green: #62e6a7;
+        --yellow: #ffd166;
+        --red: #ff7b8b;
+        --purple: #c69cff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          "PingFang SC",
+          "Microsoft YaHei",
+          sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 15% 5%, #16365b 0, transparent 31rem),
+          radial-gradient(circle at 90% 18%, #28265e 0, transparent 27rem),
+          var(--bg);
+        line-height: 1.55;
+      }
+      a {
+        color: var(--cyan);
+      }
+      main {
+        width: min(1180px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 28px 0 70px;
+      }
+      header {
+        position: relative;
+        overflow: hidden;
+        padding: 34px;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: linear-gradient(
+          135deg,
+          rgba(77, 227, 255, 0.1),
+          rgba(198, 156, 255, 0.08)
+        );
+        box-shadow: 0 22px 70px rgba(0, 0, 0, 0.3);
+      }
+      header::after {
+        content: "📰";
+        position: absolute;
+        right: 30px;
+        top: 10px;
+        font-size: 120px;
+        opacity: 0.1;
+        transform: rotate(8deg);
+      }
+      h1 {
+        margin: 8px 0 10px;
+        font-size: clamp(30px, 5vw, 58px);
+        line-height: 1.1;
+        letter-spacing: -0.04em;
+      }
+      h2 {
+        margin: 0 0 18px;
+        font-size: clamp(23px, 3vw, 34px);
+      }
+      h3 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      p {
+        margin: 6px 0;
+      }
+      .kicker,
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 5px 10px;
+        border: 1px solid rgba(77, 227, 255, 0.35);
+        border-radius: 999px;
+        background: rgba(77, 227, 255, 0.08);
+        color: var(--cyan);
+        font-size: 13px;
+        font-weight: 750;
+      }
+      .lead {
+        max-width: 790px;
+        color: #cfe2f5;
+        font-size: 18px;
+      }
+      .quick-answer {
+        margin-top: 22px;
+        padding: 16px 18px;
+        border-left: 5px solid var(--green);
+        border-radius: 12px;
+        background: rgba(98, 230, 167, 0.09);
+        font-size: 17px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-top: 22px;
+      }
+      .stat {
+        padding: 15px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(7, 17, 31, 0.55);
+      }
+      .stat strong {
+        display: block;
+        color: var(--cyan);
+        font-size: 28px;
+        line-height: 1;
+      }
+      .stat span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+        margin: 18px 0 0;
+      }
+      nav a {
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        color: var(--text);
+        text-decoration: none;
+        font-size: 14px;
+      }
+      section {
+        margin-top: 26px;
+        padding: 28px;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: rgba(13, 27, 45, 0.88);
+        box-shadow: 0 15px 50px rgba(0, 0, 0, 0.18);
+      }
+      .section-intro {
+        color: var(--muted);
+        margin: -10px 0 22px;
+      }
+      .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+      }
+      .card {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--panel-2);
+      }
+      .card .emoji {
+        font-size: 30px;
+      }
+      .card p,
+      .small {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .analogy strong {
+        color: var(--yellow);
+      }
+      .agent-map {
+        display: grid;
+        grid-template-columns: 1fr 64px 1.8fr;
+        align-items: center;
+        gap: 14px;
+      }
+      .blueprint {
+        text-align: center;
+        border: 2px solid var(--cyan);
+        background: linear-gradient(150deg, #102d42, #151d42);
+      }
+      .blueprint .robot {
+        font-size: 54px;
+      }
+      .arrow {
+        color: var(--cyan);
+        text-align: center;
+        font-size: 36px;
+      }
+      .sessions {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+      }
+      .session {
+        min-height: 92px;
+        padding: 13px;
+        border: 1px solid #3e5572;
+        border-radius: 14px;
+        background: #0a1727;
+      }
+      .session.classifier {
+        grid-column: 1 / -1;
+        border-color: var(--yellow);
+        background: rgba(255, 209, 102, 0.08);
+      }
+      .session strong {
+        display: block;
+        color: #fff;
+      }
+      .session span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .formula {
+        margin-top: 16px;
+        padding: 14px;
+        border-radius: 14px;
+        background: #071421;
+        text-align: center;
+        font-weight: 800;
+      }
+      .formula b {
+        color: var(--green);
+      }
+      .pipeline {
+        display: flex;
+        align-items: stretch;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 8px;
+      }
+      .pipe-node {
+        flex: 1 0 148px;
+        min-height: 150px;
+        padding: 15px;
+        border-radius: 16px;
+        background: #102139;
+        border-top: 4px solid var(--blue);
+      }
+      .pipe-node .big {
+        display: block;
+        font-size: 31px;
+        font-weight: 850;
+        color: var(--cyan);
+      }
+      .pipe-node small {
+        color: var(--muted);
+      }
+      .pipe-arrow {
+        align-self: center;
+        color: var(--cyan);
+        font-size: 25px;
+      }
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+      }
+      .codebox {
+        position: relative;
+        padding: 18px;
+        border: 1px solid #294864;
+        border-radius: 15px;
+        background: #05101d;
+        overflow: auto;
+      }
+      .codebox .label {
+        display: block;
+        margin-bottom: 10px;
+        color: var(--green);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      pre {
+        margin: 0;
+        color: #d6e9fb;
+        font:
+          13px/1.55 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .secret {
+        color: var(--red);
+      }
+      .handle-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 14px 0;
+      }
+      .handle-buttons button {
+        cursor: pointer;
+        padding: 8px 11px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        color: var(--text);
+        background: #0a1727;
+      }
+      .handle-buttons button.active {
+        border-color: var(--cyan);
+        color: var(--cyan);
+        box-shadow: 0 0 0 2px rgba(77, 227, 255, 0.1);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      th,
+      td {
+        padding: 10px 8px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+      }
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+      .good {
+        color: var(--green);
+      }
+      .warn {
+        color: var(--yellow);
+      }
+      .bad {
+        color: var(--red);
+      }
+      .type-rules {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .rule {
+        padding: 13px;
+        border-radius: 13px;
+        border: 1px solid var(--line);
+        background: #0a1727;
+      }
+      .rule strong {
+        display: block;
+      }
+      .rule.keep {
+        border-color: rgba(98, 230, 167, 0.55);
+      }
+      .rule.drop {
+        border-color: rgba(255, 123, 139, 0.45);
+      }
+      .db-map {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      .db {
+        position: relative;
+        padding: 17px;
+        border: 1px solid var(--line);
+        border-radius: 17px;
+        background: #0a1727;
+      }
+      .db::before {
+        content: "▤";
+        float: right;
+        color: var(--purple);
+        font-size: 25px;
+      }
+      .db code {
+        color: var(--cyan);
+      }
+      .output-list {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-top: 15px;
+      }
+      .output {
+        display: block;
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: #0a1727;
+        color: var(--text);
+        text-decoration: none;
+      }
+      .output:hover {
+        border-color: var(--cyan);
+        transform: translateY(-1px);
+      }
+      .output b {
+        color: var(--green);
+      }
+      .note {
+        margin-top: 15px;
+        padding: 13px 15px;
+        border-radius: 13px;
+        color: #d8e8f8;
+        background: rgba(111, 140, 255, 0.1);
+        border: 1px dashed rgba(111, 140, 255, 0.6);
+      }
+      .file-paths {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .file-paths code {
+        padding: 7px 9px;
+        border-radius: 9px;
+        background: #071421;
+        color: var(--cyan);
+      }
+      footer {
+        margin-top: 22px;
+        text-align: center;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      @media (max-width: 850px) {
+        .stats,
+        .grid-3,
+        .db-map {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .agent-map {
+          grid-template-columns: 1fr;
+        }
+        .arrow {
+          transform: rotate(90deg);
+        }
+        .split {
+          grid-template-columns: 1fr;
+        }
+        .type-rules {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      @media (max-width: 560px) {
+        main {
+          width: min(100% - 18px, 1180px);
+        }
+        header,
+        section {
+          padding: 20px;
+          border-radius: 18px;
+        }
+        .stats,
+        .grid-3,
+        .db-map,
+        .output-list {
+          grid-template-columns: 1fr;
+        }
+        .sessions {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        header::after {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="kicker">看图版 · 当前真实实现</span>
+        <h1>官方 AI 快讯 Agent<br />像一间小报社</h1>
+        <p class="lead">
+          5 个官方 X 账号把消息送进来，程序先筛选，再让同一个“记者
+          Agent”开不同工作台写稿，最后存进档案柜。
+        </p>
+        <div class="quick-answer">
+          <strong>直接回答：</strong>6 篇 Markdown 不是 6 种 Agent。它们由
+          <strong>1 个 Agent 定义</strong>，在
+          <strong>6 个互相隔离的写稿 Session</strong> 中完成；另有 1 个批量分类
+          Session。
+        </div>
+        <div class="stats">
+          <div class="stat"><strong>1</strong><span>Agent 配方</span></div>
+          <div class="stat">
+            <strong>7</strong><span>首轮 LLM Session：1 分类 + 6 写稿</span>
+          </div>
+          <div class="stat">
+            <strong>25</strong><span>首轮进入数据库的帖子</span>
+          </div>
+          <div class="stat">
+            <strong>6</strong><span>事件与 Markdown v1</span>
+          </div>
+        </div>
+        <nav>
+          <a href="#context">先懂几个词</a>
+          <a href="#agent">Agent 到底有几个</a>
+          <a href="#flow">完整流水线</a>
+          <a href="#api">Twitter API</a>
+          <a href="#storage">存储与版本</a>
+        </nav>
+      </header>
+
+      <section id="context">
+        <h2>① 先补 Context：把它想成学校报社</h2>
+        <div class="grid-3 analogy">
+          <div class="card">
+            <div class="emoji">📋</div>
+            <h3>Workflow = 班主任</h3>
+            <p>决定先收消息、再筛选、再写稿、最后归档。它不负责发挥文采。</p>
+          </div>
+          <div class="card">
+            <div class="emoji">🤖</div>
+            <h3>Agent = 记者的工作守则</h3>
+            <p>
+              规定模型是谁、写作原则是什么。本项目只有
+              <strong>一份</strong>记者守则。
+            </p>
+          </div>
+          <div class="card">
+            <div class="emoji">🪑</div>
+            <h3>Session = 独立课桌</h3>
+            <p>
+              同一个记者可以换课桌。每张桌子的上下文分开，不会把两个事件混在一起。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="agent">
+        <h2>② Markdown 是谁写的？</h2>
+        <p class="section-intro">
+          一个“记者模板”，开出多个独立工作台。首轮按顺序执行，不是 6
+          个机器人同时乱跑。
+        </p>
+        <div class="agent-map">
+          <div class="card blueprint">
+            <div class="robot">🤖</div>
+            <span class="pill">唯一 Agent 定义</span>
+            <h3>breaking-news-reporter</h3>
+            <p>模型：deepseek/deepseek-v4-flash</p>
+            <p>同一套安全与写作规则</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="sessions">
+            <div class="session classifier">
+              <strong>🔎 classification</strong
+              ><span>一次读完 16 条候选帖，逐条判断重要不重要</span>
+            </div>
+            <div class="session">
+              <strong>✍️ report-1</strong><span>事件 A 的独立上下文</span>
+            </div>
+            <div class="session">
+              <strong>✍️ report-2</strong><span>事件 B 的独立上下文</span>
+            </div>
+            <div class="session">
+              <strong>✍️ report-3</strong><span>事件 C 的独立上下文</span>
+            </div>
+            <div class="session">
+              <strong>✍️ report-4</strong><span>事件 D 的独立上下文</span>
+            </div>
+            <div class="session">
+              <strong>✍️ report-5</strong><span>事件 E 的独立上下文</span>
+            </div>
+            <div class="session">
+              <strong>✍️ report-6</strong><span>事件 F 的独立上下文</span>
+            </div>
+          </div>
+        </div>
+        <div class="formula">
+          1 个 Agent 配方 ＋ 7 个独立 Session ≠ 7 种 Agent
+        </div>
+        <div class="split" style="margin-top: 16px">
+          <div class="card">
+            <h3>Agent 实际交付什么？</h3>
+            <p>不是直接随意输出整篇 Markdown，而是交付结构化草稿：</p>
+            <p><code>{ headline, summary, keyFacts, changeSummary }</code></p>
+          </div>
+          <div class="card">
+            <h3>谁负责最终排版？</h3>
+            <p>
+              确定性的 TypeScript
+              “排版机”补上标题、更新时间、要点和可信来源链接，再写入
+              <code>.md</code>。
+            </p>
+          </div>
+        </div>
+        <div class="note">
+          <strong>版本规则：</strong>同一事件来了新帖，但没有新事实，就不叫写稿
+          Agent；确有新事实，才新开 Session 生成 v2/v3。
+        </div>
+      </section>
+
+      <section id="flow">
+        <h2>③ 整条流水线</h2>
+        <div class="pipeline" aria-label="处理流水线">
+          <div class="pipe-node">
+            <span class="big">5</span><b>官方账号</b><br /><small
+              >OpenAI 等</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big">5×</span><b>同一个 GET 接口</b><br /><small
+              >每账号请求一次</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big">25</span><b>标准化入库</b><br /><small
+              >每账号保留 5 条</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big bad">−9</span><b>普通转发</b><br /><small
+              >程序直接忽略</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big">16</span><b>Agent 分类</b><br /><small
+              >13 原创 + 3 Quote</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big warn">10</span><b>不够重要</b><br /><small
+              >不生成稿件</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big good">6</span><b>重要事件</b><br /><small
+              >6 篇 Markdown v1</small
+            >
+          </div>
+        </div>
+        <div class="note">
+          再次运行时，同样的 25 条会按 X 帖子 ID 去重：结果是
+          <strong>0 新帖子、0 新事件、0 新报告</strong>。
+        </div>
+      </section>
+
+      <section id="api">
+        <h2>④ Twitter API：其实只有 1 种接口</h2>
+        <p class="section-intro">
+          <span class="pill">1 个 endpoint × 5 次请求</span
+          >　没有调用用户详情、推文详情、搜索、WebSocket，也没有翻页。
+        </p>
+        <div class="split">
+          <div>
+            <h3>发出去的 HTTP 请求</h3>
+            <div
+              class="handle-buttons"
+              id="handles"
+              aria-label="选择账号"
+            ></div>
+            <div class="codebox">
+              <span class="label">REQUEST</span>
+              <pre id="request-code"></pre>
+            </div>
+            <div class="note">
+              <strong>容易误会的点：</strong><code>5</code> 没有作为 limit
+              参数发给 API。上游返回后，客户端才用
+              <code>slice(0, 5)</code> 留下前 5 条。
+            </div>
+          </div>
+          <div>
+            <h3>五次请求留下的结果</h3>
+            <div class="card" style="padding: 10px 15px">
+              <table>
+                <thead>
+                  <tr>
+                    <th>userName</th>
+                    <th>保留</th>
+                    <th>类型</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>@AnthropicAI</td>
+                    <td>5</td>
+                    <td>4 原创 · 1 转发</td>
+                  </tr>
+                  <tr>
+                    <td>@GoogleDeepMind</td>
+                    <td>5</td>
+                    <td>3 原创 · 2 转发</td>
+                  </tr>
+                  <tr>
+                    <td>@Kimi_Moonshot</td>
+                    <td>5</td>
+                    <td>2 原创 · 3 转发</td>
+                  </tr>
+                  <tr>
+                    <td>@OpenAI</td>
+                    <td>5</td>
+                    <td>3 原创 · 1 Quote · 1 转发</td>
+                  </tr>
+                  <tr>
+                    <td>@Zai_org</td>
+                    <td>5</td>
+                    <td>1 原创 · 2 Quote · 2 转发</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="small">
+              请求按账号顺序串行执行；单次超时为 20
+              秒。密钥只放在请求头中，不进入报告。
+            </p>
+          </div>
+        </div>
+
+        <h3 style="margin-top: 24px">TwitterAPI.io 原始回复长什么样？</h3>
+        <div class="split">
+          <div class="codebox">
+            <span class="label">PROVIDER RESPONSE · 结构示意</span>
+            <pre>
+{
+  "status": "success",
+  "data": {
+    "tweets": [
+      {
+        "id": "2077452646303006927",
+        "text": "New Anthropic research: Agentic...",
+        "createdAt": "Wed Jul 15 17:58:02 +0000 2026",
+        "twitterUrl": "https://twitter.com/AnthropicAI/status/...",
+        "isReply": false,
+        "author": {
+          "id": "1353836358901501952",
+          "userName": "AnthropicAI",
+          "name": "Anthropic",
+          "followers": 1538911
+        },
+        "quoted_tweet": null,
+        "retweeted_tweet": null,
+        "entities": { "urls": [] },
+        "likeCount": "...",
+        "viewCount": "..."
+      }
+    ]
+  },
+  "has_next_page": true,
+  "next_cursor": "..."
+}</pre>
+          </div>
+          <div class="codebox">
+            <span class="label">CLIENT OUTPUT · 程序接着使用</span>
+            <pre>
+{
+  "tweets": ["前 5 个原始 tweet 对象"],
+  "hasNextPage": true,
+  "nextCursor": "..."
+}
+
+// 再标准化成内部帖子
+{
+  "xPostId": "...",
+  "postType": "original | quote | reply | repost",
+  "content": "...",
+  "publishedAt": "ISO 时间",
+  "tweetUrl": "...",
+  "quotedPost": null,
+  "author": {
+    "handle": "AnthropicAI",
+    "displayName": "Anthropic"
+  }
+}</pre>
+          </div>
+        </div>
+        <div class="type-rules">
+          <div class="rule drop">
+            <strong>🔁 retweeted_tweet 存在</strong
+            ><span class="bad">普通转发 → 忽略</span>
+          </div>
+          <div class="rule drop">
+            <strong>↩️ isReply = true</strong
+            ><span class="bad">回复 → 忽略</span>
+          </div>
+          <div class="rule keep">
+            <strong>💬 quoted_tweet 存在</strong
+            ><span class="good">Quote → 交给 Agent 判断</span>
+          </div>
+          <div class="rule keep">
+            <strong>📝 以上都不是</strong
+            ><span class="good">原创 → 交给 Agent 判断</span>
+          </div>
+        </div>
+        <div class="note">
+          <strong>目前未使用：</strong>接口虽返回 <code>has_next_page</code> 和
+          <code>next_cursor</code>，Workflow 现在不翻页；互动量字段也保留在原始
+          JSON 中，但不参与重要性判断。
+        </div>
+      </section>
+
+      <section id="storage">
+        <h2>⑤ 四个档案柜 + 一个 Markdown 展示架</h2>
+        <div class="db-map">
+          <div class="db">
+            <h3><code>monitored_accounts</code></h3>
+            <p>要盯的 5 个官方账号。</p>
+          </div>
+          <div class="db">
+            <h3><code>posts</code></h3>
+            <p>原始帖、类型、处理状态、API 原始 JSON。</p>
+          </div>
+          <div class="db">
+            <h3><code>events</code></h3>
+            <p>把同一件事归成一个事件，保存事实。</p>
+          </div>
+          <div class="db">
+            <h3><code>event_reports</code></h3>
+            <p>不可修改的 v1、v2、v3 历史版本。</p>
+          </div>
+        </div>
+        <div class="formula">
+          SQLite 是“总档案”　→　<code>data/reports/*.md</code>
+          是“最新一期展示稿”
+        </div>
+        <h3 style="margin-top: 22px">当前 6 篇真实输出</h3>
+        <div class="output-list">
+          <a
+            class="output"
+            href="../data/reports/ff1c3943-5b8f-4bc1-9b2e-788605ef2cc4.md"
+            ><b>Anthropic · v1</b><br />Claude
+            表达的价值在模型与语言间存在差异</a
+          >
+          <a
+            class="output"
+            href="../data/reports/7061bc0c-af29-4077-b220-4828756f214a.md"
+            ><b>Anthropic · v1</b><br />自主 AI Agent 不当行为新研究</a
+          >
+          <a
+            class="output"
+            href="../data/reports/1cc40714-1f6e-4e54-b4cd-57e3cd0325e8.md"
+            ><b>Anthropic · v1</b><br />承诺 1000 万加元合作资助研究</a
+          >
+          <a
+            class="output"
+            href="../data/reports/4334324c-cbb0-4aec-994c-aec68d2152fe.md"
+            ><b>Google DeepMind · v1</b><br />与 Isomorphic Labs
+            制定生物弹性防御策略</a
+          >
+          <a
+            class="output"
+            href="../data/reports/5e1bb8f8-cbae-4d02-a411-a8aafdeeb984.md"
+            ><b>Kimi / Moonshot AI · v1</b
+            ><br />需求过高暂停新订阅并拆分会员体系</a
+          >
+          <a
+            class="output"
+            href="../data/reports/ec74d7d6-4308-4f34-8039-d8082005cff2.md"
+            ><b>Z.ai · v1</b><br />推出 GLM-5.2 官方开发环境 ZCode</a
+          >
+        </div>
+      </section>
+
+      <section>
+        <h2>对照代码，只看这 5 处就够了</h2>
+        <div class="file-paths">
+          <code>src/agents/breaking-news-reporter.ts</code>
+          <code>src/workflows/official-news-pull.ts</code>
+          <code>src/news/twitter-api.ts</code>
+          <code>src/news/normalizer.ts</code>
+          <code>src/news/report-files.ts</code>
+        </div>
+      </section>
+
+      <footer>
+        此页面按当前代码与 data/news.db 的真实首轮结果生成；API Key 已隐藏。
+      </footer>
+    </main>
+    <script>
+      const handles = [
+        "AnthropicAI",
+        "GoogleDeepMind",
+        "Kimi_Moonshot",
+        "OpenAI",
+        "Zai_org",
+      ];
+      const holder = document.querySelector("#handles");
+      const requestCode = document.querySelector("#request-code");
+      function selectHandle(handle) {
+        requestCode.textContent = `GET https://api.twitterapi.io/twitter/user/last_tweets\n    ?userName=${handle}\n    &includeReplies=false\n\nX-API-Key: [已隐藏]\n\nTimeout: 20,000 ms`;
+        holder.querySelectorAll("button").forEach((button) => {
+          button.classList.toggle("active", button.dataset.handle === handle);
+        });
+      }
+      handles.forEach((handle, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.handle = handle;
+        button.textContent = `@${handle}`;
+        button.addEventListener("click", () => selectHandle(handle));
+        holder.appendChild(button);
+        if (index === 0) button.classList.add("active");
+      });
+      selectHandle(handles[0]);
+    </script>
+  </body>
+</html>
