@@ -516,6 +516,7 @@
           <a href="#context">先懂几个词</a>
           <a href="#agent">Agent 到底有几个</a>
           <a href="#flow">完整流水线</a>
+          <a href="#merge">事件怎么合并</a>
           <a href="#api">Twitter API</a>
           <a href="#storage">存储与版本</a>
         </nav>
@@ -591,6 +592,32 @@
           1 个 Agent 配方 ＋ 7 个独立 Session ≠ 7 种 Agent
         </div>
         <div class="split" style="margin-top: 16px">
+          <div class="codebox">
+            <span class="label">16 条只调用一次分类 Prompt</span>
+            <pre>
+const session = await harness.session('classification');
+const { data } = await session.prompt(
+  classificationPrompt(posts),
+  { result: postAnalysisBatchSchema }
+);</pre>
+          </div>
+          <div class="codebox">
+            <span class="label">一次返回 16 份逐帖判断</span>
+            <pre>
+{
+  "analyses": [
+    {
+      "postId": "...",
+      "isImportant": true,
+      "category": "ai_tech",
+      "facts": ["一条可核实事实"],
+      "reason": "为什么重要"
+    }
+  ]
+}</pre>
+          </div>
+        </div>
+        <div class="split" style="margin-top: 16px">
           <div class="card">
             <h3>Agent 实际交付什么？</h3>
             <p>不是直接随意输出整篇 Markdown，而是交付结构化草稿：</p>
@@ -662,11 +689,89 @@
         </div>
       </section>
 
+      <section id="merge">
+        <h2>④ “类似帖子”现在怎么合并？</h2>
+        <p class="section-intro">
+          <span class="pill">会合并，但只做严格指纹匹配</span>
+          　现在还没有 LLM 语义聚类或向量相似度。
+        </p>
+        <div class="pipeline" aria-label="事件合并流程">
+          <div class="pipe-node">
+            <span class="big">16</span><b>逐帖分类结果</b><br /><small
+              >每条各有 subject、action</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big good">6</span><b>重要帖子</b><br /><small
+              >按顺序逐条处理</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big">#</span><b>计算事件指纹</b><br /><small
+              >四个字段组成身份</small
+            >
+          </div>
+          <div class="pipe-arrow">›</div>
+          <div class="pipe-node">
+            <span class="big">?</span><b>数据库查重</b><br /><small
+              >指纹相同才算同一事件</small
+            >
+          </div>
+        </div>
+        <div class="split" style="margin-top: 16px">
+          <div class="codebox">
+            <span class="label">当前事件指纹</span>
+            <pre>SHA-256(
+  category
+  + officialOrganization
+  + normalized(subject)
+  + normalized(action)
+)
+
+例：
+ai_tech | openai | gpt56 | 发布</pre>
+          </div>
+          <div class="card">
+            <h3>像核对“四项身份证”</h3>
+            <p>
+              大小写、空格和标点会被清理，所以 <code>GPT-5.6</code> 与
+              <code>GPT 5.6</code> 可以对上。
+            </p>
+            <p>
+              但“发布”和“开放 API”意思相关、文字不同，指纹就可能不同。
+            </p>
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top: 14px">
+          <div class="card">
+            <div class="emoji">🔗</div>
+            <h3>指纹相同</h3>
+            <p>挂到同一个事件；有新事实就生成 v2，没有新事实就不写新版本。</p>
+          </div>
+          <div class="card">
+            <div class="emoji">🧩</div>
+            <h3>语义相近但字段不同</h3>
+            <p>目前可能拆成两个事件；同义词、后续动作、跨组织公告尤其容易拆开。</p>
+          </div>
+          <div class="card">
+            <div class="emoji">📍</div>
+            <h3>本次真实结果</h3>
+            <p>6 条重要帖得到 6 个不同指纹，所以是 6 个事件，没有发生合并。</p>
+          </div>
+        </div>
+        <div class="note">
+          <strong>一句话：</strong>现在能合并“身份字段基本相同”的帖子，不能保证合并“人看起来是同一件事”的帖子；事实去重目前也主要依赖标准化文字相同。
+        </div>
+      </section>
+
       <section id="api">
-        <h2>④ Twitter API：其实只有 1 种接口</h2>
+        <h2>⑤ Twitter API：其实只有 1 种接口</h2>
         <p class="section-intro">
           <span class="pill">1 个 endpoint × 5 次请求</span
-          >　没有调用用户详情、推文详情、搜索、WebSocket，也没有翻页。
+          >　官方接口每页最多返回 20 条；当前程序每账号只留下前 5
+          条。没有调用用户详情、推文详情、搜索、WebSocket，也没有翻页。
         </p>
         <div class="split">
           <div>
@@ -681,9 +786,9 @@
               <pre id="request-code"></pre>
             </div>
             <div class="note">
-              <strong>容易误会的点：</strong><code>5</code> 没有作为 limit
-              参数发给 API。上游返回后，客户端才用
-              <code>slice(0, 5)</code> 留下前 5 条。
+              <strong>容易误会的点：</strong>官方接口一页最多返回 20 条，且没有
+              limit 参数。客户端收到后才用 <code>slice(0, 5)</code> 留下前 5
+              条；若这 5 条里有转发，不会再拿第 6 条补位。
             </div>
           </div>
           <div>
@@ -816,7 +921,7 @@
       </section>
 
       <section id="storage">
-        <h2>⑤ 四个档案柜 + 一个 Markdown 展示架</h2>
+        <h2>⑥ 四个档案柜 + 一个 Markdown 展示架</h2>
         <div class="db-map">
           <div class="db">
             <h3><code>monitored_accounts</code></h3>
