@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { OrganizationId } from "./organizations";
 import type {
 	AccountProfile,
+	CurrentHotTopic,
 	EventCategory,
 	EventFact,
 	EventSourcePost,
@@ -12,10 +13,16 @@ import type {
 	NewsTopic,
 	NormalizedPost,
 	PostForAnalysis,
+	PostForMetricRefresh,
 	PostForTriage,
+	PostMetricSnapshotInput,
 	PostTopicAnalysis,
+	PreviousTopicMetric,
 	StoredPost,
+	StoredTopicHeatState,
 	TopicCandidate,
+	TopicMetricPost,
+	TopicMetricResultInput,
 	TriageDecision,
 } from "./types";
 
@@ -294,6 +301,64 @@ CREATE INDEX topics_active_updated_idx ON topics(status, last_updated_at DESC);
 CREATE INDEX topic_posts_topic_idx ON topic_posts(topic_id, added_at);
 `,
 	},
+	{
+		version: 4,
+		name: "add-topic-metrics-and-heat",
+		sql: `
+CREATE TABLE post_metric_snapshots (
+	post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+	observed_at TEXT NOT NULL,
+	view_count INTEGER NOT NULL CHECK (view_count >= 0),
+	like_count INTEGER NOT NULL CHECK (like_count >= 0),
+	repost_count INTEGER NOT NULL CHECK (repost_count >= 0),
+	reply_count INTEGER NOT NULL CHECK (reply_count >= 0),
+	quote_count INTEGER NOT NULL CHECK (quote_count >= 0),
+	PRIMARY KEY (post_id, observed_at)
+);
+
+CREATE TABLE post_metric_promotions (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	promoted_at TEXT NOT NULL,
+	baseline_views INTEGER NOT NULL CHECK (baseline_views >= 0),
+	promotion_views INTEGER NOT NULL CHECK (promotion_views >= baseline_views),
+	reason TEXT NOT NULL CHECK (reason IN ('views_250k', 'views_gained_100k'))
+);
+
+CREATE TABLE topic_metric_snapshots (
+	topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+	observed_at TEXT NOT NULL,
+	effective_views REAL NOT NULL CHECK (effective_views >= 0),
+	velocity_per_hour REAL NOT NULL CHECK (velocity_per_hour >= 0),
+	growth_rate REAL,
+	view_score REAL NOT NULL CHECK (view_score >= 0 AND view_score <= 1),
+	velocity_score REAL NOT NULL CHECK (velocity_score >= 0 AND velocity_score <= 1),
+	heat REAL NOT NULL CHECK (heat >= 0 AND heat <= 1),
+	state TEXT NOT NULL CHECK (state IN ('tracking', 'ranked', 'cooling', 'unranked', 'stopped')),
+	rank INTEGER CHECK (rank IS NULL OR rank >= 1),
+	PRIMARY KEY (topic_id, observed_at)
+);
+
+CREATE TABLE topic_heat_states (
+	topic_id TEXT PRIMARY KEY REFERENCES topics(id) ON DELETE CASCADE,
+	state TEXT NOT NULL CHECK (state IN ('tracking', 'ranked', 'cooling', 'unranked', 'stopped')),
+	low_heat_streak INTEGER NOT NULL DEFAULT 0 CHECK (low_heat_streak >= 0),
+	low_growth_streak INTEGER NOT NULL DEFAULT 0 CHECK (low_growth_streak >= 0),
+	current_effective_views REAL NOT NULL DEFAULT 0 CHECK (current_effective_views >= 0),
+	current_velocity_per_hour REAL NOT NULL DEFAULT 0 CHECK (current_velocity_per_hour >= 0),
+	current_heat REAL NOT NULL DEFAULT 0 CHECK (current_heat >= 0 AND current_heat <= 1),
+	current_rank INTEGER CHECK (current_rank IS NULL OR current_rank >= 1),
+	stopped_at TEXT,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX post_metric_snapshots_observed_idx
+	ON post_metric_snapshots(post_id, observed_at DESC);
+CREATE INDEX topic_metric_snapshots_observed_idx
+	ON topic_metric_snapshots(topic_id, observed_at DESC);
+CREATE INDEX topic_heat_states_rank_idx
+	ON topic_heat_states(state, current_rank);
+`,
+	},
 ];
 
 function rowString(row: Row, key: string): string {
@@ -448,10 +513,12 @@ CREATE TABLE IF NOT EXISTS news_schema_migrations (
 	}): boolean {
 		this.#database.exec("BEGIN IMMEDIATE");
 		try {
-			this.#database.prepare(`
+			this.#database
+				.prepare(`
 DELETE FROM news_job_locks WHERE name = ? AND expires_at <= ?`)
 				.run(input.name, input.now);
-			const inserted = this.#database.prepare(`
+			const inserted = this.#database
+				.prepare(`
 INSERT OR IGNORE INTO news_job_locks(name, owner, expires_at, acquired_at)
 VALUES (?, ?, ?, ?)`)
 				.run(input.name, input.owner, input.expiresAt, input.now);
@@ -464,8 +531,10 @@ VALUES (?, ?, ?, ?)`)
 	}
 
 	releaseJobLock(name: string, owner: string): void {
-		this.#database.prepare(`
-DELETE FROM news_job_locks WHERE name = ? AND owner = ?`).run(name, owner);
+		this.#database
+			.prepare(`
+DELETE FROM news_job_locks WHERE name = ? AND owner = ?`)
+			.run(name, owner);
 	}
 
 	seedAccounts(seeds: readonly AccountSeed[]): void {
@@ -716,14 +785,18 @@ UPDATE posts SET processing_status = 'failed', processing_error = ?, updated_at 
 		limit = 100,
 		retryFailedBefore = new Date(0).toISOString(),
 	): ArticleHydrationCandidate[] {
-		return (this.#database.prepare(`
+		return (
+			this.#database
+				.prepare(`
 SELECT posts.id, posts.x_post_id, posts.raw_payload_json
 FROM posts
 LEFT JOIN post_articles ON post_articles.post_id = posts.id
 WHERE post_articles.post_id IS NULL
 	OR (post_articles.status = 'failed' AND post_articles.updated_at <= ?)
 ORDER BY posts.published_at ASC
-LIMIT ?`).all(retryFailedBefore, limit) as Row[]).map((row) => ({
+LIMIT ?`)
+				.all(retryFailedBefore, limit) as Row[]
+		).map((row) => ({
 			postId: rowString(row, "id"),
 			xPostId: rowString(row, "x_post_id"),
 			rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json, {}),
@@ -731,7 +804,8 @@ LIMIT ?`).all(retryFailedBefore, limit) as Row[]).map((row) => ({
 	}
 
 	savePostArticle(input: PostArticleInput): void {
-		this.#database.prepare(`
+		this.#database
+			.prepare(`
 INSERT INTO post_articles(
 	post_id, status, title, preview_text, full_text, contents_json,
 	raw_payload_json, error, fetched_at, updated_at
@@ -745,21 +819,23 @@ ON CONFLICT(post_id) DO UPDATE SET
 	raw_payload_json = excluded.raw_payload_json,
 	error = NULL,
 	fetched_at = excluded.fetched_at,
-	updated_at = excluded.updated_at`).run(
-			input.postId,
-			input.status,
-			input.title,
-			input.previewText,
-			input.fullText,
-			input.contents ? JSON.stringify(input.contents) : null,
-			input.rawPayload ? JSON.stringify(input.rawPayload) : null,
-			input.fetchedAt,
-			input.fetchedAt,
-		);
+	updated_at = excluded.updated_at`)
+			.run(
+				input.postId,
+				input.status,
+				input.title,
+				input.previewText,
+				input.fullText,
+				input.contents ? JSON.stringify(input.contents) : null,
+				input.rawPayload ? JSON.stringify(input.rawPayload) : null,
+				input.fetchedAt,
+				input.fetchedAt,
+			);
 	}
 
 	markPostArticleFailed(postId: string, error: string, now: string): void {
-		this.#database.prepare(`
+		this.#database
+			.prepare(`
 INSERT INTO post_articles(post_id, status, error, fetched_at, updated_at)
 VALUES (?, 'failed', ?, ?, ?)
 ON CONFLICT(post_id) DO UPDATE SET
@@ -773,7 +849,8 @@ ON CONFLICT(post_id) DO UPDATE SET
 		analysisVersion = 1,
 		retryFailedBefore = new Date(0).toISOString(),
 	): PostForTriage[] {
-		const rows = this.#database.prepare(`
+		const rows = this.#database
+			.prepare(`
 SELECT posts.id, posts.x_post_id, posts.account_id, posts.event_id, posts.post_type,
 	posts.content, posts.published_at, posts.observed_at, posts.tweet_url,
 	posts.quoted_x_post_id, posts.quoted_post_json, posts.processing_status,
@@ -797,12 +874,8 @@ WHERE post_articles.status IN ('available', 'not_article')
 		)
 	)
 ORDER BY posts.published_at ASC
-LIMIT ?`).all(
-			analysisVersion,
-			analysisVersion,
-			retryFailedBefore,
-			limit,
-		) as Row[];
+LIMIT ?`)
+			.all(analysisVersion, analysisVersion, retryFailedBefore, limit) as Row[];
 		return rows.map((row) => ({
 			...mapPost(row),
 			accountHandle: rowString(row, "account_handle"),
@@ -814,8 +887,13 @@ LIMIT ?`).all(
 		}));
 	}
 
-	savePostTopicAnalysis(analysis: PostTopicAnalysis, analysisVersion: number, now: string): void {
-		this.#database.prepare(`
+	savePostTopicAnalysis(
+		analysis: PostTopicAnalysis,
+		analysisVersion: number,
+		now: string,
+	): void {
+		this.#database
+			.prepare(`
 INSERT INTO post_topic_analyses(
 	post_id, status, decision, is_important, domain, organization_ids_json,
 	unknown_organizations_json, topic_candidate_json, reason, confidence,
@@ -830,24 +908,33 @@ ON CONFLICT(post_id) DO UPDATE SET
 	reason = excluded.reason, confidence = excluded.confidence,
 	error = NULL, analysis_version = excluded.analysis_version,
 	analyzed_at = excluded.analyzed_at, updated_at = excluded.updated_at
-WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`).run(
-			analysis.postId,
-			analysis.decision,
-			analysis.isImportant ? 1 : 0,
-			analysis.domain,
-			JSON.stringify(analysis.organizationIds),
-			JSON.stringify(analysis.unknownOrganizationCandidates),
-			analysis.topicCandidate ? JSON.stringify(analysis.topicCandidate) : null,
-			analysis.reason,
-			analysis.confidence,
-			analysisVersion,
-			now,
-			now,
-		);
+WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`)
+			.run(
+				analysis.postId,
+				analysis.decision,
+				analysis.isImportant ? 1 : 0,
+				analysis.domain,
+				JSON.stringify(analysis.organizationIds),
+				JSON.stringify(analysis.unknownOrganizationCandidates),
+				analysis.topicCandidate
+					? JSON.stringify(analysis.topicCandidate)
+					: null,
+				analysis.reason,
+				analysis.confidence,
+				analysisVersion,
+				now,
+				now,
+			);
 	}
 
-	markPostTopicAnalysisFailed(postId: string, error: string, analysisVersion: number, now: string): void {
-		this.#database.prepare(`
+	markPostTopicAnalysisFailed(
+		postId: string,
+		error: string,
+		analysisVersion: number,
+		now: string,
+	): void {
+		this.#database
+			.prepare(`
 INSERT INTO post_topic_analyses(post_id, status, error, analysis_version, analyzed_at, updated_at)
 VALUES (?, 'failed', ?, ?, ?, ?)
 ON CONFLICT(post_id) DO UPDATE SET
@@ -867,7 +954,8 @@ WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`)
 	}
 
 	listActiveTopics(since: string): NewsTopic[] {
-		const rows = this.#database.prepare(`
+		const rows = this.#database
+			.prepare(`
 SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
 	topics.summary_en, topics.topic_type, topics.status,
 	topics.first_seen_at, topics.last_updated_at,
@@ -875,7 +963,8 @@ SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
 FROM topics
 LEFT JOIN topic_organizations ON topic_organizations.topic_id = topics.id
 WHERE topics.status = 'active' AND topics.last_updated_at >= ?
-ORDER BY topics.last_updated_at DESC`).all(since) as Row[];
+ORDER BY topics.last_updated_at DESC`)
+			.all(since) as Row[];
 		const topics = new Map<string, NewsTopic>();
 		for (const row of rows) {
 			const id = rowString(row, "id");
@@ -911,7 +1000,8 @@ ORDER BY topics.last_updated_at DESC`).all(since) as Row[];
 		const topicId = randomUUID();
 		this.#database.exec("BEGIN IMMEDIATE");
 		try {
-			this.#database.prepare(`
+			this.#database
+				.prepare(`
 INSERT INTO topics(
 	id, title_zh, title_en, summary_zh, summary_en, topic_type,
 	status, first_seen_at, last_updated_at, created_at, updated_at
@@ -929,11 +1019,13 @@ INSERT INTO topics(
 					input.now,
 				);
 			for (const organizationId of new Set(input.organizationIds)) {
-				this.#database.prepare(`
+				this.#database
+					.prepare(`
 INSERT INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
 					.run(topicId, organizationId);
 			}
-			this.#database.prepare(`
+			this.#database
+				.prepare(`
 INSERT INTO topic_posts(post_id, topic_id, decision, added_at) VALUES (?, ?, ?, ?)`)
 				.run(input.postId, topicId, input.decision, input.now);
 			this.#database.exec("COMMIT");
@@ -953,18 +1045,21 @@ INSERT INTO topic_posts(post_id, topic_id, decision, added_at) VALUES (?, ?, ?, 
 	}): void {
 		this.#database.exec("BEGIN IMMEDIATE");
 		try {
-			this.#database.prepare(`
+			this.#database
+				.prepare(`
 INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
 VALUES (?, ?, ?, ?)
 ON CONFLICT(post_id) DO UPDATE SET
 	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
 				.run(input.postId, input.topicId, input.decision, input.now);
 			for (const organizationId of new Set(input.organizationIds)) {
-				this.#database.prepare(`
+				this.#database
+					.prepare(`
 INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
 					.run(input.topicId, organizationId);
 			}
-			this.#database.prepare(`
+			this.#database
+				.prepare(`
 UPDATE topics SET last_updated_at = ?, updated_at = ? WHERE id = ?`)
 				.run(input.now, input.now, input.topicId);
 			this.#database.exec("COMMIT");
@@ -982,7 +1077,8 @@ UPDATE topics SET last_updated_at = ?, updated_at = ? WHERE id = ?`)
 	}): { topicId: string | null; topicCreated: boolean } {
 		this.#database.exec("BEGIN IMMEDIATE");
 		try {
-			const previousAnalysis = this.#database.prepare(`
+			const previousAnalysis = this.#database
+				.prepare(`
 SELECT analysis_version FROM post_topic_analyses WHERE post_id = ?`)
 				.get(input.analysis.postId) as Row | undefined;
 			if (
@@ -991,7 +1087,8 @@ SELECT analysis_version FROM post_topic_analyses WHERE post_id = ?`)
 			) {
 				throw new Error("Refusing to overwrite a newer topic analysis");
 			}
-			const previousTopic = this.#database.prepare(`
+			const previousTopic = this.#database
+				.prepare(`
 SELECT topic_id FROM topic_posts WHERE post_id = ?`)
 				.get(input.analysis.postId) as Row | undefined;
 			const previousTopicId = previousTopic
@@ -1000,19 +1097,24 @@ SELECT topic_id FROM topic_posts WHERE post_id = ?`)
 			let topicId: string | null = null;
 			let topicCreated = false;
 			if (input.analysis.decision === "ignore") {
-				this.#database.prepare("DELETE FROM topic_posts WHERE post_id = ?")
+				this.#database
+					.prepare("DELETE FROM topic_posts WHERE post_id = ?")
 					.run(input.analysis.postId);
 			} else {
 				const candidate = input.analysis.topicCandidate;
-				if (!candidate) throw new Error("Tracked analysis has no topic candidate");
+				if (!candidate)
+					throw new Error("Tracked analysis has no topic candidate");
 				topicId = input.existingTopicId ?? randomUUID();
 				if (input.existingTopicId) {
-					const updated = this.#database.prepare(`
+					const updated = this.#database
+						.prepare(`
 UPDATE topics SET last_updated_at = ?, updated_at = ? WHERE id = ?`)
 						.run(input.now, input.now, topicId);
-					if (updated.changes !== 1) throw new Error(`Topic not found: ${topicId}`);
+					if (updated.changes !== 1)
+						throw new Error(`Topic not found: ${topicId}`);
 				} else {
-					this.#database.prepare(`
+					this.#database
+						.prepare(`
 INSERT INTO topics(
 	id, title_zh, title_en, summary_zh, summary_en, topic_type,
 	status, first_seen_at, last_updated_at, created_at, updated_at
@@ -1032,19 +1134,27 @@ INSERT INTO topics(
 					topicCreated = true;
 				}
 				for (const organizationId of new Set(input.analysis.organizationIds)) {
-					this.#database.prepare(`
+					this.#database
+						.prepare(`
 INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
 						.run(topicId, organizationId);
 				}
-				this.#database.prepare(`
+				this.#database
+					.prepare(`
 INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
 VALUES (?, ?, ?, ?)
 ON CONFLICT(post_id) DO UPDATE SET
 	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
-					.run(input.analysis.postId, topicId, input.analysis.decision, input.now);
+					.run(
+						input.analysis.postId,
+						topicId,
+						input.analysis.decision,
+						input.now,
+					);
 			}
 			if (previousTopicId && previousTopicId !== topicId) {
-				this.#database.prepare(`
+				this.#database
+					.prepare(`
 UPDATE topics SET status = 'archived', updated_at = ?
 WHERE id = ? AND NOT EXISTS (
 	SELECT 1 FROM topic_posts WHERE topic_posts.topic_id = topics.id
@@ -1058,6 +1168,283 @@ WHERE id = ? AND NOT EXISTS (
 			);
 			this.#database.exec("COMMIT");
 			return { topicId, topicCreated };
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	listPostsForMetricRefresh(): PostForMetricRefresh[] {
+		const rows = this.#database
+			.prepare(`
+SELECT posts.id AS post_id, posts.x_post_id
+FROM topic_posts
+JOIN posts ON posts.id = topic_posts.post_id
+JOIN topics ON topics.id = topic_posts.topic_id
+LEFT JOIN topic_heat_states ON topic_heat_states.topic_id = topics.id
+WHERE topics.status = 'active'
+	AND (topic_heat_states.state IS NULL OR topic_heat_states.state != 'stopped')
+ORDER BY posts.published_at ASC`)
+			.all() as Row[];
+		return rows.map((row) => ({
+			postId: rowString(row, "post_id"),
+			xPostId: rowString(row, "x_post_id"),
+		}));
+	}
+
+	savePostMetricSnapshots(
+		snapshots: PostMetricSnapshotInput[],
+		observedAt: string,
+	): void {
+		if (snapshots.length === 0) return;
+		const statement = this.#database.prepare(`
+INSERT INTO post_metric_snapshots(
+	post_id, observed_at, view_count, like_count, repost_count, reply_count, quote_count
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(post_id, observed_at) DO UPDATE SET
+	view_count = excluded.view_count, like_count = excluded.like_count,
+	repost_count = excluded.repost_count, reply_count = excluded.reply_count,
+	quote_count = excluded.quote_count`);
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			for (const snapshot of snapshots) {
+				statement.run(
+					snapshot.postId,
+					observedAt,
+					snapshot.views,
+					snapshot.likes,
+					snapshot.reposts,
+					snapshot.replies,
+					snapshot.quotes,
+				);
+			}
+			this.#database.exec("COMMIT");
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	promoteEligibleObservedPosts(now: string): string[] {
+		const rows = this.#database
+			.prepare(`
+SELECT topic_posts.post_id, posts.published_at,
+	(SELECT view_count FROM post_metric_snapshots first_snapshot
+		WHERE first_snapshot.post_id = topic_posts.post_id
+		ORDER BY observed_at ASC LIMIT 1) AS baseline_views,
+	(SELECT view_count FROM post_metric_snapshots latest_snapshot
+		WHERE latest_snapshot.post_id = topic_posts.post_id
+		ORDER BY observed_at DESC LIMIT 1) AS current_views
+FROM topic_posts
+JOIN posts ON posts.id = topic_posts.post_id
+WHERE topic_posts.decision = 'observe'`)
+			.all() as Row[];
+		const nowMs = new Date(now).getTime();
+		const eligible = rows.flatMap((row) => {
+			const baselineViews = row.baseline_views;
+			const currentViews = row.current_views;
+			if (typeof baselineViews !== "number" || typeof currentViews !== "number")
+				return [];
+			const ageHours =
+				(nowMs - new Date(rowString(row, "published_at")).getTime()) /
+				3_600_000;
+			if (ageHours < 5) return [];
+			const reason =
+				currentViews >= 250_000
+					? "views_250k"
+					: currentViews - baselineViews >= 100_000
+						? "views_gained_100k"
+						: null;
+			return reason
+				? [
+						{
+							postId: rowString(row, "post_id"),
+							baselineViews,
+							currentViews,
+							reason,
+						},
+					]
+				: [];
+		});
+		if (eligible.length === 0) return [];
+		const updateTopicPost = this.#database.prepare(`
+UPDATE topic_posts SET decision = 'important' WHERE post_id = ? AND decision = 'observe'`);
+		const updateAnalysis = this.#database.prepare(`
+UPDATE post_topic_analyses
+SET decision = 'important', is_important = 1, updated_at = ?
+WHERE post_id = ? AND status = 'success'`);
+		const insertPromotion = this.#database.prepare(`
+INSERT OR IGNORE INTO post_metric_promotions(
+	post_id, promoted_at, baseline_views, promotion_views, reason
+) VALUES (?, ?, ?, ?, ?)`);
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			const promoted: string[] = [];
+			for (const item of eligible) {
+				if (updateTopicPost.run(item.postId).changes !== 1) continue;
+				updateAnalysis.run(now, item.postId);
+				insertPromotion.run(
+					item.postId,
+					now,
+					item.baselineViews,
+					item.currentViews,
+					item.reason,
+				);
+				promoted.push(item.postId);
+			}
+			this.#database.exec("COMMIT");
+			return promoted;
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	listTopicMetricPosts(): TopicMetricPost[] {
+		const rows = this.#database
+			.prepare(`
+SELECT topic_posts.topic_id, posts.id AS post_id, posts.published_at,
+	(SELECT view_count FROM post_metric_snapshots
+		WHERE post_metric_snapshots.post_id = posts.id
+		ORDER BY observed_at DESC LIMIT 1) AS views,
+	(SELECT observed_at FROM post_metric_snapshots
+		WHERE post_metric_snapshots.post_id = posts.id
+		ORDER BY observed_at DESC LIMIT 1) AS metric_observed_at
+FROM topic_posts
+JOIN posts ON posts.id = topic_posts.post_id
+JOIN topics ON topics.id = topic_posts.topic_id
+LEFT JOIN topic_heat_states ON topic_heat_states.topic_id = topics.id
+WHERE topics.status = 'active'
+	AND (topic_heat_states.state IS NULL OR topic_heat_states.state != 'stopped')
+ORDER BY topic_posts.topic_id, posts.published_at`)
+			.all() as Row[];
+		return rows.map((row) => ({
+			topicId: rowString(row, "topic_id"),
+			postId: rowString(row, "post_id"),
+			publishedAt: rowString(row, "published_at"),
+			views: typeof row.views === "number" ? row.views : null,
+			metricObservedAt: nullableString(row, "metric_observed_at"),
+		}));
+	}
+
+	listPreviousTopicMetrics(): PreviousTopicMetric[] {
+		const rows = this.#database
+			.prepare(`
+SELECT snapshots.topic_id, snapshots.observed_at, snapshots.effective_views
+FROM topic_metric_snapshots snapshots
+WHERE snapshots.observed_at = (
+	SELECT max(latest.observed_at) FROM topic_metric_snapshots latest
+	WHERE latest.topic_id = snapshots.topic_id
+)`)
+			.all() as Row[];
+		return rows.map((row) => ({
+			topicId: rowString(row, "topic_id"),
+			observedAt: rowString(row, "observed_at"),
+			effectiveViews: rowNumber(row, "effective_views"),
+		}));
+	}
+
+	listCurrentHotTopics(): CurrentHotTopic[] {
+		return (
+			this.#database
+				.prepare(`
+SELECT topics.id AS topic_id, topics.title_zh, topics.title_en,
+	topic_heat_states.current_effective_views,
+	topic_heat_states.current_velocity_per_hour,
+	topic_heat_states.current_heat, topic_heat_states.state,
+	topic_heat_states.current_rank
+FROM topic_heat_states
+JOIN topics ON topics.id = topic_heat_states.topic_id
+WHERE topic_heat_states.state IN ('ranked', 'cooling')
+	AND topic_heat_states.current_rank IS NOT NULL
+ORDER BY topic_heat_states.current_rank ASC`)
+				.all() as Row[]
+		).map((row) => ({
+			topicId: rowString(row, "topic_id"),
+			titleZh: rowString(row, "title_zh"),
+			titleEn: rowString(row, "title_en"),
+			effectiveViews: rowNumber(row, "current_effective_views"),
+			velocityPerHour: rowNumber(row, "current_velocity_per_hour"),
+			heat: rowNumber(row, "current_heat"),
+			state: rowString(row, "state") as CurrentHotTopic["state"],
+			rank: rowNumber(row, "current_rank"),
+		}));
+	}
+
+	listTopicHeatStates(): StoredTopicHeatState[] {
+		return (
+			this.#database
+				.prepare(`
+SELECT topic_id, state, low_heat_streak, low_growth_streak
+FROM topic_heat_states`)
+				.all() as Row[]
+		).map((row) => ({
+			topicId: rowString(row, "topic_id"),
+			state: rowString(row, "state") as StoredTopicHeatState["state"],
+			lowHeatStreak: rowNumber(row, "low_heat_streak"),
+			lowGrowthStreak: rowNumber(row, "low_growth_streak"),
+		}));
+	}
+
+	saveTopicMetricResults(results: TopicMetricResultInput[]): void {
+		if (results.length === 0) return;
+		const insertSnapshot = this.#database.prepare(`
+INSERT INTO topic_metric_snapshots(
+	topic_id, observed_at, effective_views, velocity_per_hour, growth_rate,
+	view_score, velocity_score, heat, state, rank
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(topic_id, observed_at) DO UPDATE SET
+	effective_views = excluded.effective_views,
+	velocity_per_hour = excluded.velocity_per_hour,
+	growth_rate = excluded.growth_rate,
+	view_score = excluded.view_score,
+	velocity_score = excluded.velocity_score,
+	heat = excluded.heat, state = excluded.state, rank = excluded.rank`);
+		const upsertState = this.#database.prepare(`
+INSERT INTO topic_heat_states(
+	topic_id, state, low_heat_streak, low_growth_streak,
+	current_effective_views, current_velocity_per_hour, current_heat,
+	current_rank, stopped_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(topic_id) DO UPDATE SET
+	state = excluded.state,
+	low_heat_streak = excluded.low_heat_streak,
+	low_growth_streak = excluded.low_growth_streak,
+	current_effective_views = excluded.current_effective_views,
+	current_velocity_per_hour = excluded.current_velocity_per_hour,
+	current_heat = excluded.current_heat,
+	current_rank = excluded.current_rank,
+	stopped_at = excluded.stopped_at,
+	updated_at = excluded.updated_at`);
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			for (const result of results) {
+				insertSnapshot.run(
+					result.topicId,
+					result.observedAt,
+					result.effectiveViews,
+					result.velocityPerHour,
+					result.growthRate,
+					result.viewScore,
+					result.velocityScore,
+					result.heat,
+					result.state,
+					result.rank,
+				);
+				upsertState.run(
+					result.topicId,
+					result.state,
+					result.lowHeatStreak,
+					result.lowGrowthStreak,
+					result.effectiveViews,
+					result.velocityPerHour,
+					result.heat,
+					result.rank,
+					result.stoppedAt,
+					result.observedAt,
+				);
+			}
+			this.#database.exec("COMMIT");
 		} catch (error) {
 			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
 			throw error;

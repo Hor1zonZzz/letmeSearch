@@ -73,15 +73,73 @@ describe("TwitterApiClient", () => {
 		});
 	});
 
+	it("fetches current metrics for a batch of X post IDs", async () => {
+		const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+			const url = parseRequestUrl(input);
+			expect(url.pathname).toBe("/twitter/tweets");
+			expect(url.searchParams.get("tweet_ids")).toBe("post-1,post-2");
+			return new Response(
+				JSON.stringify({
+					status: "success",
+					tweets: [
+						{
+							id: "post-1",
+							viewCount: 1200,
+							likeCount: 30,
+							retweetCount: 4,
+							replyCount: 5,
+							quoteCount: 2,
+						},
+						{
+							id: "post-2",
+							viewCount: 900,
+							likeCount: 20,
+							retweetCount: 3,
+							replyCount: 1,
+							quoteCount: 0,
+						},
+					],
+				}),
+			);
+		});
+		const client = new TwitterApiClient({
+			apiKey: "test-key",
+			fetch: fetchMock as typeof fetch,
+		});
+
+		await expect(
+			client.fetchTweetMetrics(["post-1", "post-2"]),
+		).resolves.toEqual([
+			{
+				xPostId: "post-1",
+				views: 1200,
+				likes: 30,
+				reposts: 4,
+				replies: 5,
+				quotes: 2,
+			},
+			{
+				xPostId: "post-2",
+				views: 900,
+				likes: 20,
+				reposts: 3,
+				replies: 1,
+				quotes: 0,
+			},
+		]);
+	});
+
 	it("fetches an X Article by tweet ID", async () => {
 		const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
 			const url = parseRequestUrl(input);
 			expect(url.pathname).toBe("/twitter/article");
 			expect(url.searchParams.get("tweet_id")).toBe("article-tweet");
-			return new Response(JSON.stringify({
-				status: "success",
-				article: { title: "Full article", contents: [{ text: "Body" }] },
-			}));
+			return new Response(
+				JSON.stringify({
+					status: "success",
+					article: { title: "Full article", contents: [{ text: "Body" }] },
+				}),
+			);
 		});
 		const client = new TwitterApiClient({
 			apiKey: "test-key",

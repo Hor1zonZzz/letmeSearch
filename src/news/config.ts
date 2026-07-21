@@ -4,6 +4,7 @@ export const MONITORED_ACCOUNT_SEEDS = [
 	{ handle: "claudeai", organization: "Anthropic" },
 	{ handle: "GoogleDeepMind", organization: "Google DeepMind" },
 	{ handle: "GoogleAIStudio", organization: "Google AI Studio" },
+	{ handle: "googleaidevs", organization: "Google AI Developers" },
 	{ handle: "OfficialLoganK", organization: "Logan Kilpatrick" },
 	{ handle: "Google", organization: "Google" },
 	{ handle: "googlegemma", organization: "Google Gemma" },

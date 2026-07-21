@@ -146,9 +146,19 @@ tracking → ranked → cooling → unranked
 - 排名只使用成功获取的最新快照；
 - 同一轮计算应在事务内写入 Topic 汇总、热度分数和状态，避免部分更新。
 
+## 实现约定
+
+- TwitterAPI.io `/twitter/tweets` 每批最多请求 50 个 Post ID；
+- Topic 增长速度等于本次与上次有效浏览量之差除以快照间隔小时数；
+- 首次 Topic 快照没有速度基线，`velocityPerHour` 记为 0，增长率记为 `null`；
+- 浏览量下降按零增长处理，不产生负速度；
+- Topic 下部分 Post 请求失败时继续使用其最近成功快照，但本轮增长率记为 `null`，
+  不推进连续低增长计数；
+- 当前热榜保存在 `topic_heat_states`，历史计算保存在 `topic_metric_snapshots`。
+
 ## Phase 2 范围
 
-首个实现阶段包括：
+当前实现包括：
 
 1. Post 指标快照表；
 2. 每 4 小时的独立指标采集 CLI；

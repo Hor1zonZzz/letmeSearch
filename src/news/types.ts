@@ -115,6 +115,84 @@ export type NewsTopic = TopicCandidate & {
 	lastUpdatedAt: string;
 };
 
+export type TopicHeatState =
+	| "tracking"
+	| "ranked"
+	| "cooling"
+	| "unranked"
+	| "stopped";
+
+export type TweetMetrics = {
+	xPostId: string;
+	views: number;
+	likes: number;
+	reposts: number;
+	replies: number;
+	quotes: number;
+};
+
+export type PostMetricSnapshotInput = {
+	postId: string;
+	views: number;
+	likes: number;
+	reposts: number;
+	replies: number;
+	quotes: number;
+};
+
+export type PostForMetricRefresh = {
+	postId: string;
+	xPostId: string;
+};
+
+export type TopicMetricPost = {
+	topicId: string;
+	postId: string;
+	publishedAt: string;
+	views: number | null;
+	metricObservedAt: string | null;
+};
+
+export type PreviousTopicMetric = {
+	topicId: string;
+	observedAt: string;
+	effectiveViews: number;
+};
+
+export type StoredTopicHeatState = {
+	topicId: string;
+	state: TopicHeatState;
+	lowHeatStreak: number;
+	lowGrowthStreak: number;
+};
+
+export type CurrentHotTopic = {
+	topicId: string;
+	titleZh: string;
+	titleEn: string;
+	effectiveViews: number;
+	velocityPerHour: number;
+	heat: number;
+	state: "ranked" | "cooling";
+	rank: number;
+};
+
+export type TopicMetricResultInput = {
+	topicId: string;
+	observedAt: string;
+	effectiveViews: number;
+	velocityPerHour: number;
+	growthRate: number | null;
+	viewScore: number;
+	velocityScore: number;
+	heat: number;
+	state: TopicHeatState;
+	rank: number | null;
+	lowHeatStreak: number;
+	lowGrowthStreak: number;
+	stoppedAt: string | null;
+};
+
 export type EventFact = {
 	text: string;
 	sourcePostIds: string[];

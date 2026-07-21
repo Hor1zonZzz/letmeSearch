@@ -1,3 +1,5 @@
+import type { TweetMetrics } from "./types";
+
 type FetchImplementation = typeof globalThis.fetch;
 
 type TwitterApiClientOptions = {
@@ -31,6 +33,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 		: {};
 }
 
+function metricCount(tweet: Record<string, unknown>, key: string): number {
+	const value = tweet[key];
+	if (!Number.isSafeInteger(value) || (value as number) < 0) {
+		throw new Error(`TwitterAPI.io returned invalid ${key}`);
+	}
+	return value as number;
+}
+
 function configuredApiKey(): string {
 	const value =
 		process.env.TWITTERAPI_IO_KEY?.trim() ??
@@ -60,35 +70,85 @@ export class TwitterApiClient {
 		return { ...page, tweets: page.tweets.slice(0, limit) };
 	}
 
-	async fetchArticle(
-		tweetId: string,
-		signal?: AbortSignal,
-	): Promise<ArticleResponse> {
-		const url = new URL('/twitter/article', API_BASE_URL);
-		url.searchParams.set('tweet_id', tweetId);
-		const timeoutSignal = AbortSignal.timeout(this.#timeoutMs);
+	async fetchTweetMetrics(xPostIds: string[]): Promise<TweetMetrics[]> {
+		if (xPostIds.length === 0) return [];
+		if (xPostIds.length > 50)
+			throw new Error("TwitterAPI.io accepts at most 50 tweet IDs");
+		const url = new URL("/twitter/tweets", API_BASE_URL);
+		url.searchParams.set("tweet_ids", xPostIds.join(","));
 		const response = await this.#fetch(url, {
-			headers: { 'X-API-Key': this.#apiKey },
-			signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+			headers: { "X-API-Key": this.#apiKey },
+			signal: AbortSignal.timeout(this.#timeoutMs),
 		});
 		const text = await response.text();
 		if (!response.ok) {
-			throw new Error(`TwitterAPI.io article request failed (${response.status}): ${text.slice(0, 500)}`);
+			throw new Error(
+				`TwitterAPI.io metrics request failed (${response.status}): ${text.slice(0, 500)}`,
+			);
 		}
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(text) as unknown;
 		} catch {
-			throw new Error('TwitterAPI.io returned invalid article JSON');
+			throw new Error("TwitterAPI.io returned invalid metrics JSON");
 		}
 		const root = asRecord(parsed);
-		if (typeof root.status === 'string' && root.status !== 'success') {
-			throw new Error(`TwitterAPI.io returned an article error: ${String(root.msg ?? root.message ?? root.status).slice(0, 500)}`);
+		if (typeof root.status === "string" && root.status !== "success") {
+			throw new Error(
+				`TwitterAPI.io returned a metrics error: ${String(root.msg ?? root.message ?? root.status).slice(0, 500)}`,
+			);
+		}
+		const tweets = Array.isArray(root.tweets) ? root.tweets : [];
+		return tweets.map((value) => {
+			const tweet = asRecord(value);
+			if (typeof tweet.id !== "string" || tweet.id.length === 0) {
+				throw new Error("TwitterAPI.io returned metrics without a tweet ID");
+			}
+			return {
+				xPostId: tweet.id,
+				views: metricCount(tweet, "viewCount"),
+				likes: metricCount(tweet, "likeCount"),
+				reposts: metricCount(tweet, "retweetCount"),
+				replies: metricCount(tweet, "replyCount"),
+				quotes: metricCount(tweet, "quoteCount"),
+			};
+		});
+	}
+
+	async fetchArticle(
+		tweetId: string,
+		signal?: AbortSignal,
+	): Promise<ArticleResponse> {
+		const url = new URL("/twitter/article", API_BASE_URL);
+		url.searchParams.set("tweet_id", tweetId);
+		const timeoutSignal = AbortSignal.timeout(this.#timeoutMs);
+		const response = await this.#fetch(url, {
+			headers: { "X-API-Key": this.#apiKey },
+			signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+		});
+		const text = await response.text();
+		if (!response.ok) {
+			throw new Error(
+				`TwitterAPI.io article request failed (${response.status}): ${text.slice(0, 500)}`,
+			);
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text) as unknown;
+		} catch {
+			throw new Error("TwitterAPI.io returned invalid article JSON");
+		}
+		const root = asRecord(parsed);
+		if (typeof root.status === "string" && root.status !== "success") {
+			throw new Error(
+				`TwitterAPI.io returned an article error: ${String(root.msg ?? root.message ?? root.status).slice(0, 500)}`,
+			);
 		}
 		return {
-			article: typeof root.article === 'object' && root.article !== null
-				? root.article as Record<string, unknown>
-				: null,
+			article:
+				typeof root.article === "object" && root.article !== null
+					? (root.article as Record<string, unknown>)
+					: null,
 		};
 	}
 

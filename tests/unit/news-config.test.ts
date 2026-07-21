@@ -12,6 +12,7 @@ describe("official news account configuration", () => {
 			"claudeai",
 			"GoogleDeepMind",
 			"GoogleAIStudio",
+			"googleaidevs",
 			"OfficialLoganK",
 			"Google",
 			"googlegemma",
