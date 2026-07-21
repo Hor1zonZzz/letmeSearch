@@ -1,6 +1,6 @@
-export type PostType = 'original' | 'quote' | 'reply' | 'repost';
-export type ProcessingStatus = 'pending' | 'ignored' | 'processed' | 'failed';
-export type EventCategory = 'ai_tech' | 'ai_funding';
+export type PostType = "original" | "quote" | "reply" | "repost";
+export type ProcessingStatus = "pending" | "ignored" | "processed" | "failed";
+export type EventCategory = "ai_tech" | "ai_funding";
 
 export type AccountProfile = {
 	xUserId: string;
@@ -31,8 +31,9 @@ export type MonitoredAccount = {
 	handle: string;
 	displayName: string | null;
 	organization: string;
-	monitoringStatus: 'pending' | 'active' | 'error' | 'disabled';
+	monitoringStatus: "pending" | "active" | "error" | "disabled";
 	lastSeenPostAt: string | null;
+	ingestBoundaryPostAt: string | null;
 };
 
 export type StoredPost = {
@@ -69,7 +70,7 @@ export type NewsEvent = {
 	action: string;
 	eventFingerprint: string;
 	facts: EventFact[];
-	status: 'active' | 'updated' | 'archived';
+	status: "active" | "updated" | "archived";
 	firstSeenAt: string;
 	lastUpdatedAt: string;
 	currentReportVersion: number;
