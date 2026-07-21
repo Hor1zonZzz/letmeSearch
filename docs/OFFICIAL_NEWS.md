@@ -68,16 +68,37 @@ Reply 和 Repost 都会入库。新账号首次只保存最新一页（最多 20
 使用 cursor 向历史翻页，直到达到该账号上次成功抓取的时间边界。
 `posts.x_post_id` 唯一约束负责最终去重。
 
-建议由系统 cron 按 UTC 调度：
+Flue Node Server 内置 Croner 调度器。通过项目脚本启动 Server 时，会自动启用新闻任务：
 
-```cron
-CRON_TZ=UTC
-0 0,4,8,12,15-23 * * * cd /path/to/project && npm run news:ingest
+```bash
+npm run dev
+# 或
+npm run build && npm start
 ```
 
-即 UTC 00:00、04:00、08:00、12:00 运行，并在 15:00–23:00 每小时运行。
-命令以 JSON 输出本轮统计；任一账号失败时设置非零退出码，
-但其他账号已成功写入的内容会保留。
+项目脚本默认监听 `http://localhost:3107`，可通过 `PORT` 环境变量覆盖。健康检查：
+
+```bash
+curl http://localhost:3107/health
+```
+
+当前热榜可以直接查询：
+
+```bash
+curl http://localhost:3107/news/hot-topics
+```
+
+响应包含生成时间，以及每个上榜 Topic 的中英文标题、有效浏览量、增长速度、热度、
+状态和排名。
+
+采集按 UTC `0 0,4,8,12,15-23 * * *` 运行，即 00:00、04:00、08:00、12:00，
+并在 15:00–23:00 每小时运行。每次采集完成后，Server 会通过 Flue `invoke()`
+提交一次独立的 `news-triage` Workflow Run。Croner 使用 `protect: true` 防止采集任务
+自身重叠，业务数据库作业锁继续防止分类任务重叠。
+
+直接运行 `npm run news:ingest` 或 `npm run news:triage` 时不会额外启动调度器。
+命令以 JSON 输出本轮统计；任一账号失败时设置非零退出码，但其他账号已成功写入的
+内容会保留。
 
 ## Topic 分类
 
@@ -108,11 +129,11 @@ npm run news:metrics
 ```
 
 它通过 TwitterAPI.io `/twitter/tweets` 批量刷新 Topic 下 Post 的浏览、点赞、转发、
-回复和引用指标，并保存不可变快照。建议按 UTC 每 4 小时运行，并与采集任务错开：
+回复和引用指标，并保存不可变快照。Flue Server 按 UTC `45 0,4,8,12,16,20 * * *` 自动运行指标任务，即每 4 小时
+执行一次，并延后到每小时第 45 分钟，尽量避开采集和分类。也可以手工运行：
 
-```cron
-CRON_TZ=UTC
-15 */4 * * * cd /path/to/project && npm run news:metrics
+```bash
+npm run news:metrics
 ```
 
 主要规则：
