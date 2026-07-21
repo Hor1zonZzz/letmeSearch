@@ -18,6 +18,10 @@ export type LatestTweetsPageOptions = {
 	signal?: AbortSignal;
 };
 
+export type ArticleResponse = {
+	article: Record<string, unknown> | null;
+};
+
 const API_BASE_URL = "https://api.twitterapi.io";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
@@ -54,6 +58,38 @@ export class TwitterApiClient {
 	): Promise<LatestTweetsResponse> {
 		const page = await this.fetchLatestTweetsPage(handle, { signal });
 		return { ...page, tweets: page.tweets.slice(0, limit) };
+	}
+
+	async fetchArticle(
+		tweetId: string,
+		signal?: AbortSignal,
+	): Promise<ArticleResponse> {
+		const url = new URL('/twitter/article', API_BASE_URL);
+		url.searchParams.set('tweet_id', tweetId);
+		const timeoutSignal = AbortSignal.timeout(this.#timeoutMs);
+		const response = await this.#fetch(url, {
+			headers: { 'X-API-Key': this.#apiKey },
+			signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
+		});
+		const text = await response.text();
+		if (!response.ok) {
+			throw new Error(`TwitterAPI.io article request failed (${response.status}): ${text.slice(0, 500)}`);
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text) as unknown;
+		} catch {
+			throw new Error('TwitterAPI.io returned invalid article JSON');
+		}
+		const root = asRecord(parsed);
+		if (typeof root.status === 'string' && root.status !== 'success') {
+			throw new Error(`TwitterAPI.io returned an article error: ${String(root.msg ?? root.message ?? root.status).slice(0, 500)}`);
+		}
+		return {
+			article: typeof root.article === 'object' && root.article !== null
+				? root.article as Record<string, unknown>
+				: null,
+		};
 	}
 
 	async fetchLatestTweetsPage(

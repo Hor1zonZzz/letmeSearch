@@ -56,6 +56,65 @@ export type PostForAnalysis = StoredPost & {
 	accountOrganization: string;
 };
 
+export type TriageDecision = "important" | "observe" | "ignore";
+export type TriageDomain =
+	| "ai_technology"
+	| "ai_policy"
+	| "politics"
+	| "finance"
+	| "general_technology"
+	| "other";
+export type TopicType =
+	| "model_release"
+	| "product_release"
+	| "product_update"
+	| "open_source"
+	| "research"
+	| "partnership"
+	| "funding"
+	| "acquisition"
+	| "ai_policy"
+	| "correction"
+	| "shutdown"
+	| "other";
+
+export type TopicCandidate = {
+	titleZh: string;
+	titleEn: string;
+	summaryZh: string;
+	summaryEn: string;
+	type: TopicType;
+};
+
+export type PostForTriage = StoredPost & {
+	accountHandle: string;
+	accountDisplayName: string | null;
+	rawPayload: Record<string, unknown>;
+	articleTitle: string | null;
+	articlePreview: string | null;
+	articleText: string | null;
+};
+
+export type PostTopicAnalysis = {
+	postId: string;
+	decision: TriageDecision;
+	isImportant: boolean;
+	domain: TriageDomain;
+	organizationIds: string[];
+	unknownOrganizationCandidates: string[];
+	topicCandidate: TopicCandidate | null;
+	reason: string;
+	confidence: number;
+};
+
+export type NewsTopic = TopicCandidate & {
+	id: string;
+	status: "active" | "archived";
+	organizationIds: string[];
+	firstSeenAt: string;
+	lastUpdatedAt: string;
+};
+
 export type EventFact = {
 	text: string;
 	sourcePostIds: string[];

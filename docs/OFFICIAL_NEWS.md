@@ -70,6 +70,24 @@ CRON_TZ=UTC
 命令以 JSON 输出本轮统计；任一账号失败时设置非零退出码，
 但其他账号已成功写入的内容会保留。
 
+## Topic 分类
+
+独立的 Topic 分析命令不使用 Flue Agent session：
+
+```bash
+npm run news:triage
+```
+
+它首先检测疑似 X Article，并调用 TwitterAPI.io Article 接口保存完整双语分类证据；
+随后按发布账号分批调用 DeepSeek V4 Pro，将所有 Original、Quote、Reply 和 Repost
+分为 `important`、`observe` 或 `ignore`。分析结果使用预定义组织 ID，未知组织只作为
+候选名称保存。
+
+`important` 和 `observe` 都会生成中英双语 Topic 候选。系统把候选与最近 7 天的
+活跃 Topic 交给结构化 LLM 请求，选择已有 Topic 或创建新 Topic。因此多个账号讨论
+同一事件时只关联一个 Topic。此阶段只建立 Topic 数据模型，暂不为新 Topic 生成
+Markdown；指标快照和热榜属于后续阶段。
+
 ## 分类与报告
 
 现有端到端 Workflow 可继续手工运行：

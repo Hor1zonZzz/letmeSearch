@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import type { OrganizationId } from "./organizations";
 import type {
 	AccountProfile,
 	EventCategory,
@@ -8,9 +9,14 @@ import type {
 	EventSourcePost,
 	MonitoredAccount,
 	NewsEvent,
+	NewsTopic,
 	NormalizedPost,
 	PostForAnalysis,
+	PostForTriage,
+	PostTopicAnalysis,
 	StoredPost,
+	TopicCandidate,
+	TriageDecision,
 } from "./types";
 
 type AccountSeed = {
@@ -21,6 +27,30 @@ type AccountSeed = {
 type UpsertPostResult = {
 	post: StoredPost;
 	isNew: boolean;
+};
+
+export type OrganizationSeed = {
+	id: OrganizationId;
+	nameZh: string;
+	nameEn: string;
+	aliases: readonly string[];
+};
+
+export type ArticleHydrationCandidate = {
+	postId: string;
+	xPostId: string;
+	rawPayload: Record<string, unknown>;
+};
+
+export type PostArticleInput = {
+	postId: string;
+	status: "available" | "not_article";
+	title: string | null;
+	previewText: string | null;
+	fullText: string | null;
+	contents: unknown[] | null;
+	rawPayload: Record<string, unknown> | null;
+	fetchedAt: string;
 };
 
 type ReportCommit = {
@@ -162,6 +192,106 @@ END;
 		name: "add-ingest-boundary",
 		sql: `
 ALTER TABLE monitored_accounts ADD COLUMN ingest_boundary_post_at TEXT;
+`,
+	},
+	{
+		version: 3,
+		name: "add-topic-triage-model",
+		sql: `
+CREATE TABLE organizations (
+	id TEXT PRIMARY KEY,
+	name_zh TEXT NOT NULL,
+	name_en TEXT NOT NULL,
+	aliases_json TEXT NOT NULL CHECK (json_valid(aliases_json) AND json_type(aliases_json) = 'array'),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE post_articles (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	status TEXT NOT NULL CHECK (status IN ('available', 'not_article', 'failed')),
+	title TEXT,
+	preview_text TEXT,
+	full_text TEXT,
+	contents_json TEXT CHECK (contents_json IS NULL OR json_valid(contents_json)),
+	raw_payload_json TEXT CHECK (raw_payload_json IS NULL OR json_valid(raw_payload_json)),
+	error TEXT,
+	fetched_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK (
+		status != 'available' OR (
+			full_text IS NOT NULL AND length(full_text) > 0
+			AND contents_json IS NOT NULL AND json_valid(contents_json)
+			AND json_type(contents_json) = 'array'
+			AND raw_payload_json IS NOT NULL
+		)
+	)
+);
+
+CREATE TABLE post_topic_analyses (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+	decision TEXT CHECK (decision IS NULL OR decision IN ('important', 'observe', 'ignore')),
+	is_important INTEGER CHECK (is_important IS NULL OR is_important IN (0, 1)),
+	domain TEXT CHECK (domain IS NULL OR domain IN ('ai_technology', 'ai_policy', 'politics', 'finance', 'general_technology', 'other')),
+	organization_ids_json TEXT CHECK (organization_ids_json IS NULL OR (json_valid(organization_ids_json) AND json_type(organization_ids_json) = 'array')),
+	unknown_organizations_json TEXT CHECK (unknown_organizations_json IS NULL OR (json_valid(unknown_organizations_json) AND json_type(unknown_organizations_json) = 'array')),
+	topic_candidate_json TEXT CHECK (topic_candidate_json IS NULL OR json_valid(topic_candidate_json)),
+	reason TEXT,
+	confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+	error TEXT,
+	analysis_version INTEGER NOT NULL,
+	analyzed_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK (
+		status = 'failed' OR (
+			decision IS NOT NULL AND is_important IS NOT NULL AND domain IS NOT NULL
+			AND organization_ids_json IS NOT NULL AND unknown_organizations_json IS NOT NULL
+			AND reason IS NOT NULL AND confidence IS NOT NULL
+			AND is_important = CASE WHEN decision = 'important' THEN 1 ELSE 0 END
+			AND ((decision = 'ignore' AND topic_candidate_json IS NULL)
+				OR (decision IN ('important', 'observe') AND topic_candidate_json IS NOT NULL))
+		)
+	)
+);
+
+CREATE TABLE topics (
+	id TEXT PRIMARY KEY,
+	title_zh TEXT NOT NULL,
+	title_en TEXT NOT NULL,
+	summary_zh TEXT NOT NULL,
+	summary_en TEXT NOT NULL,
+	topic_type TEXT NOT NULL CHECK (topic_type IN ('model_release', 'product_release', 'product_update', 'open_source', 'research', 'partnership', 'funding', 'acquisition', 'ai_policy', 'correction', 'shutdown', 'other')),
+	status TEXT NOT NULL CHECK (status IN ('active', 'archived')),
+	first_seen_at TEXT NOT NULL,
+	last_updated_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE topic_organizations (
+	topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+	organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+	PRIMARY KEY (topic_id, organization_id)
+);
+
+CREATE TABLE topic_posts (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+	decision TEXT NOT NULL CHECK (decision IN ('important', 'observe')),
+	added_at TEXT NOT NULL
+);
+
+CREATE TABLE news_job_locks (
+	name TEXT PRIMARY KEY,
+	owner TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	acquired_at TEXT NOT NULL
+);
+
+CREATE INDEX topic_analyses_status_idx ON post_topic_analyses(status, analyzed_at);
+CREATE INDEX topics_active_updated_idx ON topics(status, last_updated_at DESC);
+CREATE INDEX topic_posts_topic_idx ON topic_posts(topic_id, added_at);
 `,
 	},
 ];
@@ -310,6 +440,34 @@ CREATE TABLE IF NOT EXISTS news_schema_migrations (
 		this.#database.close();
 	}
 
+	acquireJobLock(input: {
+		name: string;
+		owner: string;
+		now: string;
+		expiresAt: string;
+	}): boolean {
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			this.#database.prepare(`
+DELETE FROM news_job_locks WHERE name = ? AND expires_at <= ?`)
+				.run(input.name, input.now);
+			const inserted = this.#database.prepare(`
+INSERT OR IGNORE INTO news_job_locks(name, owner, expires_at, acquired_at)
+VALUES (?, ?, ?, ?)`)
+				.run(input.name, input.owner, input.expiresAt, input.now);
+			this.#database.exec("COMMIT");
+			return inserted.changes === 1;
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	releaseJobLock(name: string, owner: string): void {
+		this.#database.prepare(`
+DELETE FROM news_job_locks WHERE name = ? AND owner = ?`).run(name, owner);
+	}
+
 	seedAccounts(seeds: readonly AccountSeed[]): void {
 		const statement = this.#database.prepare(`
 INSERT INTO monitored_accounts(
@@ -323,6 +481,28 @@ ON CONFLICT(handle) DO UPDATE SET
 		for (const seed of seeds) {
 			const now = new Date().toISOString();
 			statement.run(randomUUID(), seed.handle, seed.organization, now, now);
+		}
+	}
+
+	seedOrganizations(seeds: readonly OrganizationSeed[]): void {
+		const statement = this.#database.prepare(`
+INSERT INTO organizations(id, name_zh, name_en, aliases_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	name_zh = excluded.name_zh,
+	name_en = excluded.name_en,
+	aliases_json = excluded.aliases_json,
+	updated_at = excluded.updated_at`);
+		for (const seed of seeds) {
+			const now = new Date().toISOString();
+			statement.run(
+				seed.id,
+				seed.nameZh,
+				seed.nameEn,
+				JSON.stringify(seed.aliases),
+				now,
+				now,
+			);
 		}
 	}
 
@@ -530,6 +710,358 @@ UPDATE posts SET processing_status = 'ignored', analysis_json = ?, analysis_vers
 UPDATE posts SET processing_status = 'failed', processing_error = ?, updated_at = ? WHERE id = ?
 `)
 			.run(error.slice(0, 500), now, postId);
+	}
+
+	listPostsForArticleHydration(
+		limit = 100,
+		retryFailedBefore = new Date(0).toISOString(),
+	): ArticleHydrationCandidate[] {
+		return (this.#database.prepare(`
+SELECT posts.id, posts.x_post_id, posts.raw_payload_json
+FROM posts
+LEFT JOIN post_articles ON post_articles.post_id = posts.id
+WHERE post_articles.post_id IS NULL
+	OR (post_articles.status = 'failed' AND post_articles.updated_at <= ?)
+ORDER BY posts.published_at ASC
+LIMIT ?`).all(retryFailedBefore, limit) as Row[]).map((row) => ({
+			postId: rowString(row, "id"),
+			xPostId: rowString(row, "x_post_id"),
+			rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json, {}),
+		}));
+	}
+
+	savePostArticle(input: PostArticleInput): void {
+		this.#database.prepare(`
+INSERT INTO post_articles(
+	post_id, status, title, preview_text, full_text, contents_json,
+	raw_payload_json, error, fetched_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	status = excluded.status,
+	title = excluded.title,
+	preview_text = excluded.preview_text,
+	full_text = excluded.full_text,
+	contents_json = excluded.contents_json,
+	raw_payload_json = excluded.raw_payload_json,
+	error = NULL,
+	fetched_at = excluded.fetched_at,
+	updated_at = excluded.updated_at`).run(
+			input.postId,
+			input.status,
+			input.title,
+			input.previewText,
+			input.fullText,
+			input.contents ? JSON.stringify(input.contents) : null,
+			input.rawPayload ? JSON.stringify(input.rawPayload) : null,
+			input.fetchedAt,
+			input.fetchedAt,
+		);
+	}
+
+	markPostArticleFailed(postId: string, error: string, now: string): void {
+		this.#database.prepare(`
+INSERT INTO post_articles(post_id, status, error, fetched_at, updated_at)
+VALUES (?, 'failed', ?, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	status = 'failed', error = excluded.error,
+	fetched_at = excluded.fetched_at, updated_at = excluded.updated_at`)
+			.run(postId, error.slice(0, 500), now, now);
+	}
+
+	listPostsForTopicAnalysis(
+		limit = 100,
+		analysisVersion = 1,
+		retryFailedBefore = new Date(0).toISOString(),
+	): PostForTriage[] {
+		const rows = this.#database.prepare(`
+SELECT posts.id, posts.x_post_id, posts.account_id, posts.event_id, posts.post_type,
+	posts.content, posts.published_at, posts.observed_at, posts.tweet_url,
+	posts.quoted_x_post_id, posts.quoted_post_json, posts.processing_status,
+	posts.raw_payload_json, monitored_accounts.handle AS account_handle,
+	monitored_accounts.display_name AS account_display_name,
+	post_articles.title AS article_title,
+	post_articles.preview_text AS article_preview,
+	post_articles.full_text AS article_text
+FROM posts
+JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
+JOIN post_articles ON post_articles.post_id = posts.id
+LEFT JOIN post_topic_analyses ON post_topic_analyses.post_id = posts.id
+WHERE post_articles.status IN ('available', 'not_article')
+	AND (
+		post_topic_analyses.post_id IS NULL
+		OR post_topic_analyses.analysis_version < ?
+		OR (
+			post_topic_analyses.status = 'failed'
+			AND post_topic_analyses.analysis_version = ?
+			AND post_topic_analyses.updated_at <= ?
+		)
+	)
+ORDER BY posts.published_at ASC
+LIMIT ?`).all(
+			analysisVersion,
+			analysisVersion,
+			retryFailedBefore,
+			limit,
+		) as Row[];
+		return rows.map((row) => ({
+			...mapPost(row),
+			accountHandle: rowString(row, "account_handle"),
+			accountDisplayName: nullableString(row, "account_display_name"),
+			rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json, {}),
+			articleTitle: nullableString(row, "article_title"),
+			articlePreview: nullableString(row, "article_preview"),
+			articleText: nullableString(row, "article_text"),
+		}));
+	}
+
+	savePostTopicAnalysis(analysis: PostTopicAnalysis, analysisVersion: number, now: string): void {
+		this.#database.prepare(`
+INSERT INTO post_topic_analyses(
+	post_id, status, decision, is_important, domain, organization_ids_json,
+	unknown_organizations_json, topic_candidate_json, reason, confidence,
+	error, analysis_version, analyzed_at, updated_at
+) VALUES (?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	status = 'success', decision = excluded.decision,
+	is_important = excluded.is_important, domain = excluded.domain,
+	organization_ids_json = excluded.organization_ids_json,
+	unknown_organizations_json = excluded.unknown_organizations_json,
+	topic_candidate_json = excluded.topic_candidate_json,
+	reason = excluded.reason, confidence = excluded.confidence,
+	error = NULL, analysis_version = excluded.analysis_version,
+	analyzed_at = excluded.analyzed_at, updated_at = excluded.updated_at
+WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`).run(
+			analysis.postId,
+			analysis.decision,
+			analysis.isImportant ? 1 : 0,
+			analysis.domain,
+			JSON.stringify(analysis.organizationIds),
+			JSON.stringify(analysis.unknownOrganizationCandidates),
+			analysis.topicCandidate ? JSON.stringify(analysis.topicCandidate) : null,
+			analysis.reason,
+			analysis.confidence,
+			analysisVersion,
+			now,
+			now,
+		);
+	}
+
+	markPostTopicAnalysisFailed(postId: string, error: string, analysisVersion: number, now: string): void {
+		this.#database.prepare(`
+INSERT INTO post_topic_analyses(post_id, status, error, analysis_version, analyzed_at, updated_at)
+VALUES (?, 'failed', ?, ?, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	status = CASE
+		WHEN post_topic_analyses.status = 'success' THEN post_topic_analyses.status
+		ELSE 'failed'
+	END,
+	error = excluded.error,
+	analysis_version = CASE
+		WHEN post_topic_analyses.status = 'success' THEN post_topic_analyses.analysis_version
+		ELSE excluded.analysis_version
+	END,
+	analyzed_at = excluded.analyzed_at,
+	updated_at = excluded.updated_at
+WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`)
+			.run(postId, error.slice(0, 500), analysisVersion, now, now);
+	}
+
+	listActiveTopics(since: string): NewsTopic[] {
+		const rows = this.#database.prepare(`
+SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
+	topics.summary_en, topics.topic_type, topics.status,
+	topics.first_seen_at, topics.last_updated_at,
+	topic_organizations.organization_id
+FROM topics
+LEFT JOIN topic_organizations ON topic_organizations.topic_id = topics.id
+WHERE topics.status = 'active' AND topics.last_updated_at >= ?
+ORDER BY topics.last_updated_at DESC`).all(since) as Row[];
+		const topics = new Map<string, NewsTopic>();
+		for (const row of rows) {
+			const id = rowString(row, "id");
+			const existing = topics.get(id);
+			const organizationId = nullableString(row, "organization_id");
+			if (existing) {
+				if (organizationId) existing.organizationIds.push(organizationId);
+				continue;
+			}
+			topics.set(id, {
+				id,
+				titleZh: rowString(row, "title_zh"),
+				titleEn: rowString(row, "title_en"),
+				summaryZh: rowString(row, "summary_zh"),
+				summaryEn: rowString(row, "summary_en"),
+				type: rowString(row, "topic_type") as NewsTopic["type"],
+				status: rowString(row, "status") as NewsTopic["status"],
+				organizationIds: organizationId ? [organizationId] : [],
+				firstSeenAt: rowString(row, "first_seen_at"),
+				lastUpdatedAt: rowString(row, "last_updated_at"),
+			});
+		}
+		return [...topics.values()];
+	}
+
+	createTopicForPost(input: {
+		candidate: TopicCandidate;
+		organizationIds: string[];
+		postId: string;
+		decision: TriageDecision;
+		now: string;
+	}): string {
+		const topicId = randomUUID();
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			this.#database.prepare(`
+INSERT INTO topics(
+	id, title_zh, title_en, summary_zh, summary_en, topic_type,
+	status, first_seen_at, last_updated_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+				.run(
+					topicId,
+					input.candidate.titleZh,
+					input.candidate.titleEn,
+					input.candidate.summaryZh,
+					input.candidate.summaryEn,
+					input.candidate.type,
+					input.now,
+					input.now,
+					input.now,
+					input.now,
+				);
+			for (const organizationId of new Set(input.organizationIds)) {
+				this.#database.prepare(`
+INSERT INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
+					.run(topicId, organizationId);
+			}
+			this.#database.prepare(`
+INSERT INTO topic_posts(post_id, topic_id, decision, added_at) VALUES (?, ?, ?, ?)`)
+				.run(input.postId, topicId, input.decision, input.now);
+			this.#database.exec("COMMIT");
+			return topicId;
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	attachPostToTopic(input: {
+		topicId: string;
+		postId: string;
+		decision: TriageDecision;
+		organizationIds: string[];
+		now: string;
+	}): void {
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			this.#database.prepare(`
+INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
+				.run(input.postId, input.topicId, input.decision, input.now);
+			for (const organizationId of new Set(input.organizationIds)) {
+				this.#database.prepare(`
+INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
+					.run(input.topicId, organizationId);
+			}
+			this.#database.prepare(`
+UPDATE topics SET last_updated_at = ?, updated_at = ? WHERE id = ?`)
+				.run(input.now, input.now, input.topicId);
+			this.#database.exec("COMMIT");
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	commitPostTopicAnalysis(input: {
+		analysis: PostTopicAnalysis;
+		analysisVersion: number;
+		existingTopicId: string | null;
+		now: string;
+	}): { topicId: string | null; topicCreated: boolean } {
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			const previousAnalysis = this.#database.prepare(`
+SELECT analysis_version FROM post_topic_analyses WHERE post_id = ?`)
+				.get(input.analysis.postId) as Row | undefined;
+			if (
+				previousAnalysis &&
+				rowNumber(previousAnalysis, "analysis_version") > input.analysisVersion
+			) {
+				throw new Error("Refusing to overwrite a newer topic analysis");
+			}
+			const previousTopic = this.#database.prepare(`
+SELECT topic_id FROM topic_posts WHERE post_id = ?`)
+				.get(input.analysis.postId) as Row | undefined;
+			const previousTopicId = previousTopic
+				? rowString(previousTopic, "topic_id")
+				: null;
+			let topicId: string | null = null;
+			let topicCreated = false;
+			if (input.analysis.decision === "ignore") {
+				this.#database.prepare("DELETE FROM topic_posts WHERE post_id = ?")
+					.run(input.analysis.postId);
+			} else {
+				const candidate = input.analysis.topicCandidate;
+				if (!candidate) throw new Error("Tracked analysis has no topic candidate");
+				topicId = input.existingTopicId ?? randomUUID();
+				if (input.existingTopicId) {
+					const updated = this.#database.prepare(`
+UPDATE topics SET last_updated_at = ?, updated_at = ? WHERE id = ?`)
+						.run(input.now, input.now, topicId);
+					if (updated.changes !== 1) throw new Error(`Topic not found: ${topicId}`);
+				} else {
+					this.#database.prepare(`
+INSERT INTO topics(
+	id, title_zh, title_en, summary_zh, summary_en, topic_type,
+	status, first_seen_at, last_updated_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+						.run(
+							topicId,
+							candidate.titleZh,
+							candidate.titleEn,
+							candidate.summaryZh,
+							candidate.summaryEn,
+							candidate.type,
+							input.now,
+							input.now,
+							input.now,
+							input.now,
+						);
+					topicCreated = true;
+				}
+				for (const organizationId of new Set(input.analysis.organizationIds)) {
+					this.#database.prepare(`
+INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
+						.run(topicId, organizationId);
+				}
+				this.#database.prepare(`
+INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
+					.run(input.analysis.postId, topicId, input.analysis.decision, input.now);
+			}
+			if (previousTopicId && previousTopicId !== topicId) {
+				this.#database.prepare(`
+UPDATE topics SET status = 'archived', updated_at = ?
+WHERE id = ? AND NOT EXISTS (
+	SELECT 1 FROM topic_posts WHERE topic_posts.topic_id = topics.id
+)`)
+					.run(input.now, previousTopicId);
+			}
+			this.savePostTopicAnalysis(
+				input.analysis,
+				input.analysisVersion,
+				input.now,
+			);
+			this.#database.exec("COMMIT");
+			return { topicId, topicCreated };
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	findEventByFingerprint(fingerprint: string): NewsEvent | null {

@@ -73,6 +73,26 @@ describe("TwitterApiClient", () => {
 		});
 	});
 
+	it("fetches an X Article by tweet ID", async () => {
+		const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+			const url = parseRequestUrl(input);
+			expect(url.pathname).toBe("/twitter/article");
+			expect(url.searchParams.get("tweet_id")).toBe("article-tweet");
+			return new Response(JSON.stringify({
+				status: "success",
+				article: { title: "Full article", contents: [{ text: "Body" }] },
+			}));
+		});
+		const client = new TwitterApiClient({
+			apiKey: "test-key",
+			fetch: fetchMock as typeof fetch,
+		});
+
+		const result = await client.fetchArticle("article-tweet");
+
+		expect(result.article).toMatchObject({ title: "Full article" });
+	});
+
 	it("surfaces provider-level errors", async () => {
 		const client = new TwitterApiClient({
 			apiKey: "test-key",

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MONITORED_ACCOUNT_SEEDS } from "../../src/news/config";
+import { ORGANIZATIONS } from "../../src/news/organizations";
 
 describe("official news account configuration", () => {
 	it("includes the configured AI organizations and industry figures once", () => {
@@ -28,5 +29,19 @@ describe("official news account configuration", () => {
 		expect(new Set(handles.map((handle) => handle.toLowerCase())).size).toBe(
 			handles.length,
 		);
+	});
+
+	it("defines unique canonical organization IDs", () => {
+		const ids = ORGANIZATIONS.map(({ id }) => id);
+
+		expect(ids).toContain("openai");
+		expect(ids).toContain("anthropic");
+		expect(ids).toContain("xai");
+		expect(ids).toContain("spacex");
+		expect(ids).toContain("alibaba");
+		expect(ids).toContain("moonshot-ai");
+		expect(ids).toContain("zhipu-ai");
+		expect(ids).toContain("tencent");
+		expect(new Set(ids).size).toBe(ids.length);
 	});
 });
