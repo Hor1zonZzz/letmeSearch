@@ -8,6 +8,7 @@ describe("official news account configuration", () => {
 		expect(handles).toEqual([
 			"OpenAI",
 			"AnthropicAI",
+			"claudeai",
 			"GoogleDeepMind",
 			"Kimi_Moonshot",
 			"Zai_org",

@@ -6,6 +6,7 @@
 
 - `@OpenAI`
 - `@AnthropicAI`
+- `@claudeai`（Claude，归属 Anthropic）
 - `@GoogleDeepMind`
 - `@Kimi_Moonshot`
 - `@Zai_org`

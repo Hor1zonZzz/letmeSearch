@@ -1,6 +1,7 @@
 export const MONITORED_ACCOUNT_SEEDS = [
 	{ handle: "OpenAI", organization: "OpenAI" },
 	{ handle: "AnthropicAI", organization: "Anthropic" },
+	{ handle: "claudeai", organization: "Anthropic" },
 	{ handle: "GoogleDeepMind", organization: "Google DeepMind" },
 	{ handle: "Kimi_Moonshot", organization: "Kimi / Moonshot AI" },
 	{ handle: "Zai_org", organization: "Z.ai" },
