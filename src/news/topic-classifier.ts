@@ -4,6 +4,7 @@ import {
 	topicPostAnalysisBatchSchema,
 	topicResolutionSchema,
 	type StructuredTopicPostAnalysis,
+	type StructuredTopicResolution,
 } from "./schemas";
 import {
 	topicClassificationPrompt,
@@ -25,15 +26,20 @@ export type TopicModelResponse = {
 	finishReason: string | null;
 };
 
-export type TopicModelRequester = (prompt: string) => Promise<TopicModelResponse>;
+export type TopicModelRequester = (
+	prompt: string,
+) => Promise<TopicModelResponse>;
 
 function apiKey(): string {
 	const value = process.env.DEEPSEEK_API_KEY?.trim();
-	if (!value) throw new Error("DEEPSEEK_API_KEY is required for topic classification");
+	if (!value)
+		throw new Error("DEEPSEEK_API_KEY is required for topic classification");
 	return value;
 }
 
-export async function requestTopicJson(prompt: string): Promise<TopicModelResponse> {
+export async function requestTopicJson(
+	prompt: string,
+): Promise<TopicModelResponse> {
 	const client = new OpenAI({
 		apiKey: apiKey(),
 		baseURL: DEEPSEEK_BASE_URL,
@@ -53,8 +59,12 @@ export async function requestTopicJson(prompt: string): Promise<TopicModelRespon
 		max_tokens: MAX_TOKENS,
 	});
 	const choice = completion.choices[0];
-	if (!choice) throw new Error("DeepSeek returned no topic-classification choice");
-	return { content: choice.message.content, finishReason: choice.finish_reason };
+	if (!choice)
+		throw new Error("DeepSeek returned no topic-classification choice");
+	return {
+		content: choice.message.content,
+		finishReason: choice.finish_reason,
+	};
 }
 
 function parseJsonResponse(response: TopicModelResponse): unknown {
@@ -81,33 +91,40 @@ function validateCoverage(
 	const seen = new Set<string>();
 	for (const analysis of analyses) {
 		if (!expected.has(analysis.postId)) {
-			throw new Error(`Topic classification returned unknown postId: ${analysis.postId}`);
+			throw new Error(
+				`Topic classification returned unknown postId: ${analysis.postId}`,
+			);
 		}
 		if (seen.has(analysis.postId)) {
-			throw new Error(`Topic classification returned duplicate postId: ${analysis.postId}`);
+			throw new Error(
+				`Topic classification returned duplicate postId: ${analysis.postId}`,
+			);
 		}
 		if (analysis.decision === "ignore" && analysis.topicCandidate !== null) {
-			throw new Error(`Ignored post ${analysis.postId} returned a topic candidate`);
+			throw new Error(
+				`Ignored post ${analysis.postId} returned a topic candidate`,
+			);
 		}
 		if (analysis.decision !== "ignore" && analysis.topicCandidate === null) {
-			throw new Error(`Tracked post ${analysis.postId} omitted its topic candidate`);
+			throw new Error(
+				`Tracked post ${analysis.postId} omitted its topic candidate`,
+			);
 		}
 		seen.add(analysis.postId);
 	}
 	if (seen.size !== expected.size) {
-		throw new Error(`Topic classification omitted ${expected.size - seen.size} post(s)`);
+		throw new Error(
+			`Topic classification omitted ${expected.size - seen.size} post(s)`,
+		);
 	}
 }
 
-export async function classifyTopicPosts(
+export function normalizeTopicPostAnalyses(
 	posts: PostForTriage[],
-	request: TopicModelRequester = requestTopicJson,
-): Promise<PostTopicAnalysis[]> {
-	if (posts.length === 0) return [];
-	const response = await request(topicClassificationPrompt(posts));
-	const batch = v.parse(topicPostAnalysisBatchSchema, parseJsonResponse(response));
-	validateCoverage(posts, batch.analyses);
-	return batch.analyses.map((analysis) => ({
+	analyses: StructuredTopicPostAnalysis[],
+): PostTopicAnalysis[] {
+	validateCoverage(posts, analyses);
+	return analyses.map((analysis) => ({
 		postId: analysis.postId,
 		decision: analysis.decision,
 		isImportant: analysis.decision === "important",
@@ -120,6 +137,42 @@ export async function classifyTopicPosts(
 		reason: analysis.reason,
 		confidence: analysis.confidence,
 	}));
+}
+
+export async function classifyTopicPosts(
+	posts: PostForTriage[],
+	request: TopicModelRequester = requestTopicJson,
+): Promise<PostTopicAnalysis[]> {
+	if (posts.length === 0) return [];
+	const response = await request(topicClassificationPrompt(posts));
+	const batch = v.parse(
+		topicPostAnalysisBatchSchema,
+		parseJsonResponse(response),
+	);
+	return normalizeTopicPostAnalyses(posts, batch.analyses);
+}
+
+export function normalizeTopicResolution(
+	candidates: NewsTopic[],
+	resolution: StructuredTopicResolution,
+): string | null {
+	if (resolution.createNew) {
+		if (resolution.existingTopicId !== null) {
+			throw new Error(
+				"New topic resolution also returned an existing topic ID",
+			);
+		}
+		return null;
+	}
+	if (!resolution.existingTopicId) {
+		throw new Error("Existing topic resolution omitted its topic ID");
+	}
+	if (!candidates.some((topic) => topic.id === resolution.existingTopicId)) {
+		throw new Error(
+			`Topic resolution returned unknown ID: ${resolution.existingTopicId}`,
+		);
+	}
+	return resolution.existingTopicId;
 }
 
 export async function resolveTopicCandidate(options: {
@@ -138,18 +191,9 @@ export async function resolveTopicCandidate(options: {
 			activeTopics: candidates,
 		}),
 	);
-	const resolution = v.parse(topicResolutionSchema, parseJsonResponse(response));
-	if (resolution.createNew) {
-		if (resolution.existingTopicId !== null) {
-			throw new Error("New topic resolution also returned an existing topic ID");
-		}
-		return null;
-	}
-	if (!resolution.existingTopicId) {
-		throw new Error("Existing topic resolution omitted its topic ID");
-	}
-	if (!candidates.some((topic) => topic.id === resolution.existingTopicId)) {
-		throw new Error(`Topic resolution returned unknown ID: ${resolution.existingTopicId}`);
-	}
-	return resolution.existingTopicId;
+	const resolution = v.parse(
+		topicResolutionSchema,
+		parseJsonResponse(response),
+	);
+	return normalizeTopicResolution(candidates, resolution);
 }

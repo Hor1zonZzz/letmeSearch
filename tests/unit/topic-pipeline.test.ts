@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewsDatabase } from "../../src/news/database";
 import { normalizeTwitterApiTweet } from "../../src/news/normalizer";
+import type { PostTopicAnalysis } from "../../src/news/types";
 import {
 	runTopicBacklog,
 	runTopicPipeline,
@@ -25,10 +26,14 @@ function rawTweet(id: string, createdAt: string): Record<string, unknown> {
 	};
 }
 
-function analysis(postId: string, decision: "important" | "observe") {
+function analysis(
+	postId: string,
+	decision: "important" | "observe",
+): PostTopicAnalysis {
 	return {
 		postId,
 		decision,
+		isImportant: decision === "important",
 		domain: "ai_technology",
 		organizationIds: ["anthropic"],
 		unknownOrganizationCandidates: [],
@@ -59,11 +64,15 @@ describe("topic pipeline", () => {
 		if (!account) throw new Error("Expected account");
 		const first = database.upsertPost(
 			account.id,
-			normalizeTwitterApiTweet(rawTweet("x-1", "Wed Jul 22 09:00:00 +0000 2026")),
+			normalizeTwitterApiTweet(
+				rawTweet("x-1", "Wed Jul 22 09:00:00 +0000 2026"),
+			),
 		).post;
 		const second = database.upsertPost(
 			account.id,
-			normalizeTwitterApiTweet(rawTweet("x-2", "Wed Jul 22 10:00:00 +0000 2026")),
+			normalizeTwitterApiTweet(
+				rawTweet("x-2", "Wed Jul 22 10:00:00 +0000 2026"),
+			),
 		).post;
 		for (const post of [first, second]) {
 			database.savePostArticle({
@@ -77,29 +86,20 @@ describe("topic pipeline", () => {
 				fetchedAt: "2026-07-22T10:01:00.000Z",
 			});
 		}
-		const classificationRequest = vi.fn(async () => ({
-			content: JSON.stringify({
-				analyses: [analysis(first.id, "important"), analysis(second.id, "observe")],
-			}),
-			finishReason: "stop",
-		}));
-		const resolutionRequest = vi.fn(async (prompt: string) => {
-			const match = prompt.match(/"id":"([^"]+)"/);
-			if (!match?.[1]) throw new Error("Expected an active topic ID");
-			return {
-				content: JSON.stringify({
-					existingTopicId: match[1],
-					createNew: false,
-					reason: "Same Claude Code update",
-				}),
-				finishReason: "stop",
-			};
+		const classifier = vi.fn(async () => [
+			analysis(first.id, "important"),
+			analysis(second.id, "observe"),
+		]);
+		const resolver = vi.fn(async ({ activeTopics }) => {
+			const [topic] = activeTopics;
+			if (!topic) throw new Error("Expected an active topic");
+			return topic.id;
 		});
 
 		const stats = await runTopicPipeline({
 			database,
-			classificationRequest,
-			resolutionRequest,
+			classifier,
+			resolver,
 			now: () => new Date("2026-07-22T11:00:00.000Z"),
 		});
 
@@ -112,9 +112,12 @@ describe("topic pipeline", () => {
 			postsAttachedToTopics: 2,
 			errors: [],
 		});
-		expect(database.listActiveTopics("2026-07-15T00:00:00.000Z")).toHaveLength(1);
+		expect(database.listActiveTopics("2026-07-15T00:00:00.000Z")).toHaveLength(
+			1,
+		);
 		expect(database.listPostsForTopicAnalysis()).toEqual([]);
-		expect(resolutionRequest).toHaveBeenCalledOnce();
+		expect(classifier).toHaveBeenCalledOnce();
+		expect(resolver).toHaveBeenCalledOnce();
 	});
 
 	it("prevents overlapping topic backlog jobs", async () => {

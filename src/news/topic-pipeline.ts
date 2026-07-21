@@ -2,12 +2,23 @@ import { randomUUID } from "node:crypto";
 import { TOPIC_ANALYSIS_VERSION } from "./config";
 import type { NewsDatabase } from "./database";
 import { ORGANIZATIONS } from "./organizations";
-import {
-	classifyTopicPosts,
-	resolveTopicCandidate,
-	type TopicModelRequester,
-} from "./topic-classifier";
-import type { PostForTriage, PostTopicAnalysis } from "./types";
+import { classifyTopicPosts, resolveTopicCandidate } from "./topic-classifier";
+import type {
+	NewsTopic,
+	PostForTriage,
+	PostTopicAnalysis,
+	TopicCandidate,
+} from "./types";
+
+export type TopicPostClassifier = (
+	posts: PostForTriage[],
+) => Promise<PostTopicAnalysis[]>;
+
+export type TopicCandidateResolver = (options: {
+	candidate: TopicCandidate;
+	organizationIds: string[];
+	activeTopics: NewsTopic[];
+}) => Promise<string | null>;
 
 export type TopicPipelineStats = {
 	postsAttempted: number;
@@ -42,20 +53,21 @@ function groupByAccount(posts: PostForTriage[]): PostForTriage[][] {
 
 async function analyzeBatches(options: {
 	posts: PostForTriage[];
-	request?: TopicModelRequester;
+	classifier: TopicPostClassifier;
 	database: NewsDatabase;
 	now: () => Date;
 	stats: TopicPipelineStats;
 }): Promise<Map<string, PostTopicAnalysis>> {
 	const groups = groupByAccount(options.posts);
 	const settled = await Promise.allSettled(
-		groups.map((posts) => classifyTopicPosts(posts, options.request)),
+		groups.map((posts) => options.classifier(posts)),
 	);
 	const analyses = new Map<string, PostTopicAnalysis>();
 	for (const [index, outcome] of settled.entries()) {
 		const posts = groups[index] ?? [];
 		if (outcome.status === "fulfilled") {
-			for (const analysis of outcome.value) analyses.set(analysis.postId, analysis);
+			for (const analysis of outcome.value)
+				analyses.set(analysis.postId, analysis);
 			continue;
 		}
 		const message = errorMessage(outcome.reason);
@@ -77,15 +89,17 @@ async function analyzeBatches(options: {
 
 export async function runTopicPipeline(options: {
 	database: NewsDatabase;
-	classificationRequest?: TopicModelRequester;
-	resolutionRequest?: TopicModelRequester;
+	classifier?: TopicPostClassifier;
+	resolver?: TopicCandidateResolver;
 	limit?: number;
 	now?: () => Date;
 }): Promise<TopicPipelineStats> {
 	const { database } = options;
 	const now = options.now ?? (() => new Date());
 	database.seedOrganizations(ORGANIZATIONS);
-	const retryFailedBefore = new Date(now().getTime() - 60 * 60 * 1_000).toISOString();
+	const retryFailedBefore = new Date(
+		now().getTime() - 60 * 60 * 1_000,
+	).toISOString();
 	const posts = database.listPostsForTopicAnalysis(
 		options.limit ?? 100,
 		TOPIC_ANALYSIS_VERSION,
@@ -101,9 +115,11 @@ export async function runTopicPipeline(options: {
 		postsAttachedToTopics: 0,
 		errors: [],
 	};
+	const classifier = options.classifier ?? classifyTopicPosts;
+	const resolver = options.resolver ?? resolveTopicCandidate;
 	const analyses = await analyzeBatches({
 		posts,
-		request: options.classificationRequest,
+		classifier,
 		database,
 		now,
 		stats,
@@ -117,15 +133,19 @@ export async function runTopicPipeline(options: {
 			let existingTopicId: string | null = null;
 			if (analysis.decision !== "ignore") {
 				const candidate = analysis.topicCandidate;
-				if (!candidate) throw new Error("Tracked analysis has no topic candidate");
-				const since = new Date(now().getTime() - 7 * 24 * 60 * 60 * 1_000).toISOString();
+				if (!candidate)
+					throw new Error("Tracked analysis has no topic candidate");
+				const since = new Date(
+					now().getTime() - 7 * 24 * 60 * 60 * 1_000,
+				).toISOString();
 				const activeTopics = database.listActiveTopics(since);
-				existingTopicId = await resolveTopicCandidate({
-					candidate,
-					organizationIds: analysis.organizationIds,
-					activeTopics,
-					request: options.resolutionRequest,
-				});
+				if (activeTopics.length > 0) {
+					existingTopicId = await resolver({
+						candidate,
+						organizationIds: analysis.organizationIds,
+						activeTopics,
+					});
+				}
 			}
 			const committed = database.commitPostTopicAnalysis({
 				analysis,
@@ -158,8 +178,8 @@ export async function runTopicPipeline(options: {
 
 export async function runTopicBacklog(options: {
 	database: NewsDatabase;
-	classificationRequest?: TopicModelRequester;
-	resolutionRequest?: TopicModelRequester;
+	classifier?: TopicPostClassifier;
+	resolver?: TopicCandidateResolver;
 	batchSize?: number;
 	now?: () => Date;
 }): Promise<TopicPipelineStats> {
@@ -187,8 +207,8 @@ export async function runTopicBacklog(options: {
 		while (true) {
 			const batch = await runTopicPipeline({
 				database: options.database,
-				classificationRequest: options.classificationRequest,
-				resolutionRequest: options.resolutionRequest,
+				classifier: options.classifier,
+				resolver: options.resolver,
 				limit: options.batchSize ?? 100,
 				now,
 			});
