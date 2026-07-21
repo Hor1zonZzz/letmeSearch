@@ -9,6 +9,10 @@
 - `@AnthropicAI`
 - `@claudeai`（Claude，归属 Anthropic）
 - `@GoogleDeepMind`
+- `@GoogleAIStudio`（Google AI Studio）
+- `@OfficialLoganK`（Logan Kilpatrick）
+- `@Google`
+- `@googlegemma`（Google Gemma）
 - `@Kimi_Moonshot`
 - `@Zai_org`
 - `@elonmusk`（Elon Musk）
@@ -82,7 +86,8 @@ Topic 分析由 Flue Workflow 编排：
 npm run news:triage
 ```
 
-Workflow 首先检测疑似 X Article，并调用 TwitterAPI.io Article 接口保存完整分类证据；
+Workflow 只在 TwitterAPI.io 的 Tweet 数据包含非空 `article` 字段时调用 X Article
+接口并保存完整正文；普通外部链接的 `card` 不会触发 Article 请求。
 随后为每个账号批次创建独立 Agent session，通过 Valibot 结构化结果将所有 Original、
 Quote、Reply 和 Repost 分为 `important`、`observe` 或 `ignore`。Agent 使用 DeepSeek
 V4 Pro，分析结果只能引用预定义组织 ID，未知组织只作为候选名称保存。

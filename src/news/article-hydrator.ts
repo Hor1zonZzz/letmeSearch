@@ -41,14 +41,14 @@ function nestedArticleTweetId(
 ): string | null {
 	if (typeof value !== "object" || value === null) return null;
 	const tweet = asRecord(value);
-	for (const key of ["quoted_tweet", "retweeted_tweet"]) {
-		const nested = nestedArticleTweetId(tweet[key], fallbackId);
-		if (nested) return nested;
-	}
-	if (typeof tweet.card === "object" && tweet.card !== null) {
+	if (typeof tweet.article === "object" && tweet.article !== null) {
 		return typeof tweet.id === "string" && tweet.id.length > 0
 			? tweet.id
 			: fallbackId;
+	}
+	for (const key of ["quoted_tweet", "retweeted_tweet"]) {
+		const nested = nestedArticleTweetId(tweet[key], fallbackId);
+		if (nested) return nested;
 	}
 	return null;
 }
@@ -95,7 +95,9 @@ export async function hydratePostArticles(options: {
 	if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 10) {
 		throw new Error("article concurrency must be an integer between 1 and 10");
 	}
-	const retryFailedBefore = new Date(now().getTime() - 60 * 60 * 1_000).toISOString();
+	const retryFailedBefore = new Date(
+		now().getTime() - 60 * 60 * 1_000,
+	).toISOString();
 	const posts = database.listPostsForArticleHydration(
 		options.limit ?? 100,
 		retryFailedBefore,
@@ -127,7 +129,8 @@ export async function hydratePostArticles(options: {
 
 		try {
 			const targetTweetId = articleTweetId(post);
-			if (!targetTweetId) throw new Error("Article candidate lost its tweet ID");
+			if (!targetTweetId)
+				throw new Error("Article candidate lost its tweet ID");
 			const response = await client.fetchArticle(targetTweetId);
 			if (!response.article) {
 				database.savePostArticle({
@@ -148,7 +151,9 @@ export async function hydratePostArticles(options: {
 				: [];
 			const fullText = articleText(contents);
 			if (contents.length === 0 || fullText.length === 0) {
-				throw new Error("TwitterAPI.io returned an article without full contents");
+				throw new Error(
+					"TwitterAPI.io returned an article without full contents",
+				);
 			}
 			database.savePostArticle({
 				postId: post.postId,
