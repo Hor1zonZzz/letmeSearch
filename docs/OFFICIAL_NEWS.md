@@ -19,6 +19,10 @@
 - `@gdb`（Greg Brockman）
 - `@thinkymachines`（Thinking Machines Lab）
 - `@Ali_TongyiLab`（Alibaba Tongyi Lab）
+- `@Alibaba_Qwen`（Alibaba Qwen）
+- `@MiniMax_AI`（MiniMax）
+- `@badlogicgames`（Mario Zechner）
+- `@ylecun`（Yann LeCun）
 - `@cursor_ai`（Cursor）
 - `@nvidia`（NVIDIA）
 - `@DarioAmodei`（Dario Amodei）

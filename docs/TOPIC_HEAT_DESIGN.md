@@ -4,7 +4,8 @@
 
 热度系统以 **Topic（真实事件）** 为排名单位，而不是直接给单条 Post 排名。多个账号对同一事件的原创、引用、回复或转发会先归入同一个 Topic，再汇总互动指标，从而避免同一事件重复占榜。
 
-该阶段只使用确定性的 TypeScript 和 SQLite 计算，不依赖 Flue、Agent 或 LLM。LLM 只负责前序的 Post 分类与 Topic 合并。
+该阶段只使用确定性的 TypeScript 和 SQLite 计算，不依赖 Flue、Agent 或 LLM。
+LLM 只负责前序的 Post 分类与 Topic 合并。
 
 ## 数据流
 
