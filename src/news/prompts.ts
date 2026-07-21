@@ -24,7 +24,7 @@ export function classificationPrompt(posts: PostForAnalysis[]): string {
 	}));
 	return `Classify every supplied X post for a Chinese AI breaking-news feed.
 
-An important post must contain a concrete event: a model or product release, material product update, open-source release, major research result, major partnership, financing, acquisition, correction, or shutdown. Routine promotion, hiring, podcasts, event invitations, vague opinions, benchmarks reposted without a company announcement, and content with no new event must not qualify.
+An important post must contain a concrete event: a model or product release, material product update, open-source release, major research result, major partnership, financing, acquisition, correction, or shutdown. Apply the same evidence standard to organization accounts and individual industry figures. Routine promotion, hiring, podcasts, event invitations, vague opinions, benchmarks reposted without a concrete announcement, and content with no new event must not qualify.
 
 Return a JSON object with exactly this top-level shape: {"analyses":[{"postId":"...","isImportant":false,"category":"other","organization":"","subject":"","action":"","canonicalTitle":"","facts":[],"reason":"..."}]}. Return exactly one analysis for every postId, without extra or missing IDs. Do not wrap the JSON in Markdown.
 

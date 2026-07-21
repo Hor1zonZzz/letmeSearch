@@ -1,9 +1,14 @@
 export const MONITORED_ACCOUNT_SEEDS = [
-	{ handle: 'OpenAI', organization: 'OpenAI' },
-	{ handle: 'AnthropicAI', organization: 'Anthropic' },
-	{ handle: 'GoogleDeepMind', organization: 'Google DeepMind' },
-	{ handle: 'Kimi_Moonshot', organization: 'Kimi / Moonshot AI' },
-	{ handle: 'Zai_org', organization: 'Z.ai' },
+	{ handle: "OpenAI", organization: "OpenAI" },
+	{ handle: "AnthropicAI", organization: "Anthropic" },
+	{ handle: "GoogleDeepMind", organization: "Google DeepMind" },
+	{ handle: "Kimi_Moonshot", organization: "Kimi / Moonshot AI" },
+	{ handle: "Zai_org", organization: "Z.ai" },
+	{ handle: "elonmusk", organization: "Elon Musk" },
+	{ handle: "karpathy", organization: "Andrej Karpathy" },
+	{ handle: "ilyasut", organization: "Ilya Sutskever" },
+	{ handle: "sama", organization: "Sam Altman" },
+	{ handle: "SpaceXAI", organization: "SpaceXAI" },
 ] as const;
 
 export const DEFAULT_POSTS_PER_ACCOUNT = 5;

@@ -71,7 +71,7 @@ describe("post classifier", () => {
 						],
 						created: 1,
 						id: "completion-1",
-						model: "deepseek-v4-flash",
+						model: "deepseek-v4-pro",
 						object: "chat.completion",
 					}),
 					{ headers: { "content-type": "application/json" } },
@@ -91,7 +91,7 @@ describe("post classifier", () => {
 		expect(String(url)).toBe("https://api.deepseek.com/chat/completions");
 		const body = JSON.parse(String(init?.body));
 		expect(body).toMatchObject({
-			model: "deepseek-v4-flash",
+			model: "deepseek-v4-pro",
 			response_format: { type: "json_object" },
 			max_tokens: 8192,
 			messages: [

@@ -1,6 +1,6 @@
-# 官方 AI 账号快讯验证版
+# AI 账号快讯验证版
 
-该流程一次性拉取五个官方 X 账号的最近推文，过滤回复、普通转发和日常宣传，并为重要事件生成中文 Markdown 快讯。
+该流程一次性拉取受监控的 AI 组织与行业人物 X 账号的最近推文，过滤回复、普通转发和日常宣传，并为重要事件生成中文 Markdown 快讯。
 
 ## 监控账号
 
@@ -9,6 +9,11 @@
 - `@GoogleDeepMind`
 - `@Kimi_Moonshot`
 - `@Zai_org`
+- `@elonmusk`（Elon Musk）
+- `@karpathy`（Andrej Karpathy）
+- `@ilyasut`（Ilya Sutskever）
+- `@sama`（Sam Altman）
+- `@SpaceXAI`
 
 账号清单位于 `src/news/config.ts`。
 
