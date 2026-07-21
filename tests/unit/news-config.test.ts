@@ -16,6 +16,13 @@ describe("official news account configuration", () => {
 			"ilyasut",
 			"sama",
 			"SpaceXAI",
+			"gdb",
+			"thinkymachines",
+			"Ali_TongyiLab",
+			"cursor_ai",
+			"nvidia",
+			"DarioAmodei",
+			"trq212",
 		]);
 		expect(new Set(handles.map((handle) => handle.toLowerCase())).size).toBe(
 			handles.length,

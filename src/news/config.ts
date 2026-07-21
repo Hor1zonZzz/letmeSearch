@@ -9,6 +9,13 @@ export const MONITORED_ACCOUNT_SEEDS = [
 	{ handle: "ilyasut", organization: "Ilya Sutskever" },
 	{ handle: "sama", organization: "Sam Altman" },
 	{ handle: "SpaceXAI", organization: "SpaceXAI" },
+	{ handle: "gdb", organization: "Greg Brockman" },
+	{ handle: "thinkymachines", organization: "Thinking Machines Lab" },
+	{ handle: "Ali_TongyiLab", organization: "Alibaba Tongyi Lab" },
+	{ handle: "cursor_ai", organization: "Cursor" },
+	{ handle: "nvidia", organization: "NVIDIA" },
+	{ handle: "DarioAmodei", organization: "Dario Amodei" },
+	{ handle: "trq212", organization: "Thariq Shihipar" },
 ] as const;
 
 export const DEFAULT_POSTS_PER_ACCOUNT = 5;

@@ -14,6 +14,13 @@
 - `@ilyasut`（Ilya Sutskever）
 - `@sama`（Sam Altman）
 - `@SpaceXAI`
+- `@gdb`（Greg Brockman）
+- `@thinkymachines`（Thinking Machines Lab）
+- `@Ali_TongyiLab`（Alibaba Tongyi Lab）
+- `@cursor_ai`（Cursor）
+- `@nvidia`（NVIDIA）
+- `@DarioAmodei`（Dario Amodei）
+- `@trq212`（Thariq Shihipar）
 
 账号清单位于 `src/news/config.ts`。
 
