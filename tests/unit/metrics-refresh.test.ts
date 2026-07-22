@@ -192,7 +192,7 @@ describe("metrics refresh", () => {
 					effectiveViews: 1_060_000,
 					velocityPerHour: 57_500,
 					heat: 1,
-					effectiveReachRatio: 1.06,
+					effectiveReachRatio: 0.53,
 					breakoutHeat: 1,
 					state: "ranked",
 					rank: 1,
@@ -208,14 +208,14 @@ describe("metrics refresh", () => {
 			breakoutTopics: [
 				{
 					topicId: created.topicId,
-					effectiveReachRatio: 1.06,
+					effectiveReachRatio: 0.53,
 					breakoutHeat: 1,
 					rank: 1,
 				},
 			],
 		});
-		expect(ranked.topics[0]?.reachVelocityPerHour).toBeCloseTo(0.0575);
-		expect(ranked.breakoutTopics[0]?.reachVelocityPerHour).toBeCloseTo(0.0575);
+		expect(ranked.topics[0]?.reachVelocityPerHour).toBeCloseTo(0.02875);
+		expect(ranked.breakoutTopics[0]?.reachVelocityPerHour).toBeCloseTo(0.02875);
 		expect(stopped).toMatchObject({
 			stoppedTopics: 1,
 			topics: [{ topicId: created.topicId, state: "stopped", rank: null }],

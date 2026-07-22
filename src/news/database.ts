@@ -775,7 +775,7 @@ ORDER BY handle COLLATE NOCASE`)
 UPDATE monitored_accounts SET
 	x_user_id = COALESCE(?, x_user_id),
 	display_name = COALESCE(?, display_name),
-	followers_count = COALESCE(followers_count, ?),
+	followers_count = COALESCE(?, followers_count),
 	raw_profile_json = COALESCE(?, raw_profile_json),
 	monitoring_status = 'active',
 	ingest_boundary_post_at = CASE
