@@ -204,7 +204,15 @@ export function searchActiveTopics(options: {
 	subject: TopicSearchSubject;
 	input: TopicSearchInput;
 	windowHours?: number;
-}): { searchId: string; from: string; to: string; matches: TopicSearchMatch[] } {
+	offset?: number;
+}): {
+	searchId: string;
+	from: string;
+	to: string;
+	eligibleTopicCount: number;
+	truncated: boolean;
+	matches: TopicSearchMatch[];
+} {
 	if (!Number.isInteger(options.input.limit) || options.input.limit < 1 || options.input.limit > 8) {
 		throw new Error("Topic search limit must be an integer between 1 and 8");
 	}
@@ -290,16 +298,28 @@ export function searchActiveTopics(options: {
 			},
 		};
 	});
-	const matches = scored
-		.sort((left, right) => right.score - left.score || left.match.topicId.localeCompare(right.match.topicId))
-		.slice(0, options.input.limit)
+	const ordered = scored.sort(
+		(left, right) =>
+			right.score - left.score || left.match.topicId.localeCompare(right.match.topicId),
+	);
+	const offset = options.offset ?? 0;
+	const matches = ordered
+		.slice(offset, offset + options.input.limit)
 		.map(({ match }) => match);
 	const searchId = createHash("sha256").update(JSON.stringify({
 		postId: options.subject.postId,
 		from,
 		to,
 		input: options.input,
+		offset,
 		matches: matches.map(({ topicId, revision }) => [topicId, revision]),
 	})).digest("hex").slice(0, 24);
-	return { searchId, from, to, matches };
+	return {
+		searchId,
+		from,
+		to,
+		eligibleTopicCount: ordered.length,
+		truncated: offset + matches.length < ordered.length,
+		matches,
+	};
 }
