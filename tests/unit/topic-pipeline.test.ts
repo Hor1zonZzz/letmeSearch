@@ -119,6 +119,41 @@ describe("topic pipeline", () => {
 		]);
 	});
 
+	it("does not reclassify Posts older than 72 hours", async () => {
+		const database = new NewsDatabase(":memory:");
+		databases.push(database);
+		database.seedAccounts([{ handle: "claudeai", organization: "Anthropic" }]);
+		const [account] = database.listEnabledAccounts();
+		if (!account) throw new Error("Expected account");
+		const oldPost = database.upsertPost(
+			account.id,
+			normalizeTwitterApiTweet(
+				rawTweet("old-classification", "Sat Jul 18 09:00:00 +0000 2026"),
+			),
+		).post;
+		database.savePostArticle({
+			postId: oldPost.id,
+			status: "not_article",
+			title: null,
+			previewText: null,
+			fullText: null,
+			contents: null,
+			rawPayload: null,
+			fetchedAt: "2026-07-22T10:01:00.000Z",
+		});
+		const classifier = vi.fn(async () => [analysis(oldPost.id)]);
+
+		const stats = await runTopicPipeline({
+			database,
+			classifier,
+			now: () => new Date("2026-07-22T11:00:00.000Z"),
+		});
+
+		expect(stats.postsAttempted).toBe(0);
+		expect(classifier).not.toHaveBeenCalled();
+		expect(database.listPostsForTopicAnalysis()).toHaveLength(1);
+	});
+
 	it("excludes topics whose newest source post is older than 72 hours", () => {
 		const database = new NewsDatabase(":memory:");
 		databases.push(database);

@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { TOPIC_ANALYSIS_VERSION, TOPIC_RESOLUTION_VERSION } from "./config";
+import {
+	TOPIC_ANALYSIS_VERSION,
+	TOPIC_MATCH_WINDOW_HOURS,
+	TOPIC_RESOLUTION_VERSION,
+} from "./config";
 import type { NewsDatabase } from "./database";
 import { ORGANIZATIONS } from "./organizations";
 import { classifyTopicPosts } from "./topic-classifier";
@@ -85,13 +89,18 @@ export async function runTopicPipeline(options: {
 	const { database } = options;
 	const now = options.now ?? (() => new Date());
 	database.seedOrganizations(ORGANIZATIONS);
+	const startedAt = now();
 	const retryFailedBefore = new Date(
-		now().getTime() - 60 * 60 * 1_000,
+		startedAt.getTime() - 60 * 60 * 1_000,
+	).toISOString();
+	const publishedSince = new Date(
+		startedAt.getTime() - TOPIC_MATCH_WINDOW_HOURS * 60 * 60 * 1_000,
 	).toISOString();
 	const posts = database.listPostsForTopicAnalysis(
 		options.limit ?? 100,
 		TOPIC_ANALYSIS_VERSION,
 		retryFailedBefore,
+		publishedSince,
 	);
 	const stats: TopicPipelineStats = {
 		postsAttempted: posts.length,
@@ -117,7 +126,7 @@ export async function runTopicPipeline(options: {
 		if (!analysis) continue;
 		const analyzedAt = now().toISOString();
 		try {
-			database.commitPostTopicClassification({
+			const committed = database.commitPostTopicClassification({
 				analysis,
 				analysisVersion: TOPIC_ANALYSIS_VERSION,
 				resolutionVersion: TOPIC_RESOLUTION_VERSION,
@@ -128,7 +137,7 @@ export async function runTopicPipeline(options: {
 				stats.ignoredPosts += 1;
 				continue;
 			}
-			stats.postsQueuedForResolution += 1;
+			if (committed.queuedForResolution) stats.postsQueuedForResolution += 1;
 			stats.importantPosts += 1;
 		} catch (error) {
 			const message = errorMessage(error);

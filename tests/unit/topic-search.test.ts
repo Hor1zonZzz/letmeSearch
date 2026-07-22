@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { NewsDatabase } from "../../src/news/database";
 import { normalizeTwitterApiTweet } from "../../src/news/normalizer";
 import { searchActiveTopics, type TopicSearchSubject } from "../../src/news/topic-search";
-import { createSearchActiveTopics } from "../../src/tools/search-active-topics";
 import type { PostTopicAnalysis } from "../../src/news/types";
 
 function rawTweet(id: string, createdAt: string, text: string): Record<string, unknown> {
@@ -116,6 +115,15 @@ describe("active Topic search", () => {
 		});
 		expect(result.matches[0]?.sourceTime.nearestDeltaHours).toBe(22);
 
+		const recentOnly = searchActiveTopics({
+			database,
+			subject,
+			activeSince: "2026-07-03T00:00:00.000Z",
+			input: { focus: null, strategy: "organization", detail: "compact", limit: 2 },
+		});
+		expect(recentOnly.from).toBe("2026-07-03T00:00:00.000Z");
+		expect(recentOnly.matches).toEqual([]);
+
 		const focusedResult = searchActiveTopics({
 			database,
 			subject,
@@ -153,72 +161,4 @@ describe("active Topic search", () => {
 		});
 	});
 
-	it("exposes bounded read-only searches with opaque pagination", async () => {
-		const database = new NewsDatabase(":memory:");
-		databases.push(database);
-		database.seedAccounts([{ handle: "OpenAI", organization: "OpenAI" }]);
-		database.seedOrganizations([
-			{ id: "openai", nameZh: "OpenAI", nameEn: "OpenAI", aliases: [] },
-		]);
-		const [account] = database.listEnabledAccounts();
-		if (!account) throw new Error("Expected account");
-		for (const [id, hour] of [["one", "10"], ["two", "11"]] as const) {
-			const post = database.upsertPost(
-				account.id,
-				normalizeTwitterApiTweet(rawTweet(
-					id,
-					`Thu Jul 02 ${hour}:00:00 +0000 2026`,
-					`OpenAI release ${id}`,
-				)),
-			).post;
-			database.commitPostTopicAnalysis({
-				analysis: analysis(post.id, ["openai"], `OpenAI Release ${id}`),
-				analysisVersion: 1,
-				existingTopicId: null,
-				now: "2026-07-22T10:00:00.000Z",
-			});
-		}
-		const session = createSearchActiveTopics({
-			database,
-			subject: {
-				postId: "candidate",
-				xPostId: "candidate-x",
-				publishedAt: "2026-07-02T12:00:00.000Z",
-				titleZh: "OpenAI Release",
-				titleEn: "OpenAI Release",
-				summaryZh: "OpenAI release",
-				summaryEn: "OpenAI release",
-				type: "partnership",
-				organizationIds: ["openai"],
-				unknownOrganizationNames: [],
-				strongReferences: [],
-			},
-		});
-		const input = {
-			focus: null,
-			strategy: "balanced" as const,
-			detail: "compact" as const,
-			limit: 1,
-			cursor: "null",
-		};
-
-		const first = await session.tool.run({ input, signal: undefined });
-		expect(first.matches).toHaveLength(1);
-		expect(first.nextCursor).not.toBeNull();
-		const second = await session.tool.run({
-			input: { ...input, cursor: first.nextCursor },
-			signal: undefined,
-		});
-		expect(second.matches).toHaveLength(1);
-		expect(new Set([
-			first.matches[0]?.topicId,
-			second.matches[0]?.topicId,
-		]).size).toBe(2);
-		expect(session.trace).toHaveLength(2);
-		expect(session.wasTopicReturned(first.matches[0]!.topicId, 0)).toBe(true);
-		await expect(session.tool.run({
-			input: { ...input, cursor: "forged" },
-			signal: undefined,
-		})).rejects.toThrow("cursor is invalid");
-	});
 });

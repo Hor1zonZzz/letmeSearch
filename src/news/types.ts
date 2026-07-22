@@ -107,23 +107,30 @@ export type PostTopicAnalysis = {
 	confidence: number;
 };
 
-export type TopicResolutionStatus =
-	| "pending"
-	| "resolved"
-	| "deferred"
-	| "failed";
+export type TopicResolutionStatus = "pending" | "resolved" | "failed";
 
 export type PendingTopicResolution = {
 	postId: string;
 	xPostId: string;
+	accountId: string;
+	accountHandle: string;
+	postType: PostType;
+	content: string;
 	publishedAt: string;
 	quotedXPostId: string | null;
+	quotedPost: Record<string, unknown> | null;
 	rawPayload: Record<string, unknown>;
+	articleTitle: string | null;
+	articleText: string | null;
 	organizationIds: string[];
 	unknownOrganizationCandidates: string[];
 	topicCandidate: TopicCandidate;
 	attemptCount: number;
 	resolutionVersion: number;
+};
+
+export type TopicResolutionBatchPost = PendingTopicResolution & {
+	postRef: string;
 };
 
 export type TopicSearchSourcePost = {

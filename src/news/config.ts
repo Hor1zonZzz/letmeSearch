@@ -32,5 +32,5 @@ export const DEFAULT_POSTS_PER_ACCOUNT = 5;
 export const MAX_POSTS_PER_ACCOUNT = 20;
 export const ANALYSIS_VERSION = 1;
 export const TOPIC_ANALYSIS_VERSION = 3;
-export const TOPIC_RESOLUTION_VERSION = 1;
+export const TOPIC_RESOLUTION_VERSION = 2;
 export const TOPIC_MATCH_WINDOW_HOURS = 72;

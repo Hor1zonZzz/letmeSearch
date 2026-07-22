@@ -51,9 +51,11 @@
 ```dotenv
 DEEPSEEK_API_KEY=...
 TWITTERAPI_IO_KEY=...
+NEWS_DATABASE_PATH=./data/news.db
 ```
 
-不要把真实密钥写入 `.env.example` 或提交到 Git。
+不要把真实密钥写入 `.env.example` 或提交到 Git。测试可将 `NEWS_DATABASE_PATH`
+指向临时 SQLite 副本，避免修改生产 `data/news.db`。
 
 ## 数据采集
 
@@ -93,8 +95,9 @@ curl http://localhost:3107/news/hot-topics
 
 采集按 UTC `0 0,4,8,12,15-23 * * *` 运行，即 00:00、04:00、08:00、12:00，
 并在 15:00–23:00 每小时运行。每次采集完成后，Server 会通过 Flue `invoke()`
-提交一次独立的 `news-triage` Workflow Run。Topic Resolver 另按 `*/10 * * * *`
-每 10 分钟提交一次独立的 `news-topic-resolve` Run。Croner 使用 `protect: true` 防止
+提交一次独立的 `news-triage` Workflow Run；分类完成后该 Workflow 会立即提交
+`news-topic-resolve` Run。Topic Resolver 另按 `*/10 * * * *` 每 10 分钟执行恢复调度，
+处理此前技术失败的剩余 Post。Croner 使用 `protect: true` 防止
 同一 Cron 回调重叠，业务数据库作业锁防止分类和 Resolver 实例重叠。
 
 直接运行 `npm run news:ingest` 或 `npm run news:triage` 时不会额外启动调度器。
@@ -116,8 +119,9 @@ Quote、Reply 和 Repost 分为 `important` 或 `ignore`。Agent 使用 DeepSeek
 V4 Pro，分析结果只能引用预定义组织 ID，未知组织只作为候选名称保存。
 
 `important` 会生成中英双语 Topic 候选并进入独立 Resolution 队列；
-`news:triage` 不再同步合并 Topic。Article 补全和分类积压均按 Post 发布时间从新到旧处理，
-避免历史积压阻塞最新新闻。
+`news:triage` 不同步合并 Topic，但会在分类完成后立即激活 Topic Resolver。分类和
+Resolution 都只处理当前时间向前 72 小时内的 Post；Article 补全和分类积压按发布时间
+从新到旧处理，避免历史积压阻塞最新新闻。
 
 ## Topic Resolver
 
@@ -127,23 +131,23 @@ Topic 合并由独立 Flue Workflow 执行：
 npm run news:resolve
 ```
 
-每条待处理 Post 使用隔离的 `topic-resolver` Agent session。Agent 只有一个只读
-`search_active_topics` 工具，没有 Topic CRUD、SQL 或数据库写入能力。搜索窗口固定为
-Candidate Post 实际发布时间前后各 72 小时，而不是任务执行时间；多个 Organization ID
-按集合重叠召回，无重叠时仍可通过事件主题和 Quote、Repost、X Article、URL 等强引用
-找到候选。每次搜索最多返回 8 个 Topic，每个 session 最多调用 3 次并接收 12 个唯一
-Topic。
+Resolver 按账号建立批次：同一账号本轮最多 20 条 `important` Post 进入同一个
+`topic-resolver` Agent session，账号批次之间严格串行。Agent 先在批次内部按真实事件、
+持续故事、技术洞察或专家论点分组，再通过四个精简工具完成 Resolution：
 
-Resolver 使用 Valibot 结构化输出 `attach | create | defer`。`attach` 必须引用本 session
-工具实际返回的 Topic ID、revision 和 search ID；`create` 必须引用至少一次成功且未截断
-的搜索；搜索失败、结果截断、证据冲突或低置信度一律 `defer`，不能默认创建 Topic。
-TypeScript 校验输出后，以事务和乐观 revision 原子提交成员关系。分类和 Resolution 状态
-分开保存，因此 Resolution 失败只重试合并，不会重复补全文章或重新分类。失败采用
-1 小时、6 小时退避，第三次后转为人工可检查的 defer；每次语义决策及搜索轨迹写入
-`topic_resolution_events` 审计表。
+- `search_topics(posts)`：搜索至少包含一条最近 72 小时来源 Post 的现有 Topic；
+- `add_posts(posts, topic, update?)`：把一组 Post 原子加入搜索返回的 Topic，可选更新双语内容；
+- `create_topic(posts, topic)`：搜索无同事件结果时，从整组 Post 创建一个双语 Topic；
+- `finish_topic_plan()`：仅在批次中每条 Post 都恰好分配一次后完成。
 
-系统只运行工具型 Resolver，并在校验通过后正式提交 `attach | create | defer` 结果；
-不再保留或调用旧版全候选 Resolver。
+Agent 只看到 `p1`、`p2` 和 `t1` 等 session 短引用；数据库 UUID、search ID、revision、
+搜索策略和分页参数均由 TypeScript 管理。每次 `add_posts` 或 `create_topic` 都是独立的
+短事务并立即生效，因此后续组发生技术故障时，已成功组不会回滚；剩余 Post 保持失败
+重试状态。业务决策只有 attach 或 create，没有 defer、ignore 或现有 Topic 之间的 merge。
+工具失败不能作为创建依据，系统会按退避时间自动重试未完成 Post。
+
+一条 Post 由 `topic_posts.post_id` 主键保证最多属于一个 Topic；一个 Topic 可以原子接收
+一条或多条 Post。每次成功写入及搜索轨迹继续记录到 `topic_resolution_events`。
 
 系统仍以 Topic 为热度和排名单位。多个账号讨论同一事件时只关联一个 Topic；此阶段
 暂不为新 Topic 生成 Markdown。

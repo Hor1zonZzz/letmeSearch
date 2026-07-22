@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { OrganizationId } from "./organizations";
 import type {
@@ -524,6 +525,48 @@ CREATE INDEX topic_posts_topic_idx ON topic_posts(topic_id, added_at);
 DROP TABLE IF EXISTS post_metric_promotions;
 `,
 	},
+	{
+		version: 9,
+		name: "remove-deferred-topic-resolutions",
+		sql: `
+CREATE TABLE post_topic_resolutions_v9 (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	status TEXT NOT NULL CHECK (status IN ('pending', 'resolved', 'failed')),
+	decision TEXT CHECK (decision IS NULL OR decision IN ('attach', 'create')),
+	target_topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+	confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+	reason TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+	next_retry_at TEXT,
+	error TEXT,
+	resolution_version INTEGER NOT NULL,
+	resolved_at TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK (
+		(status = 'resolved' AND decision IN ('attach', 'create') AND resolved_at IS NOT NULL)
+		OR (status IN ('pending', 'failed') AND decision IS NULL)
+	)
+);
+INSERT INTO post_topic_resolutions_v9(
+	post_id, status, decision, target_topic_id, confidence, reason,
+	attempt_count, next_retry_at, error, resolution_version,
+	resolved_at, created_at, updated_at
+)
+SELECT post_id,
+	CASE WHEN status = 'deferred' THEN 'failed' ELSE status END,
+	CASE WHEN status = 'resolved' THEN decision ELSE NULL END,
+	target_topic_id, confidence, reason, attempt_count,
+	CASE WHEN status = 'deferred' THEN COALESCE(next_retry_at, updated_at) ELSE next_retry_at END,
+	CASE WHEN status = 'deferred' THEN COALESCE(error, 'Legacy deferred resolution queued for retry') ELSE error END,
+	resolution_version, resolved_at, created_at, updated_at
+FROM post_topic_resolutions;
+DROP TABLE post_topic_resolutions;
+ALTER TABLE post_topic_resolutions_v9 RENAME TO post_topic_resolutions;
+CREATE INDEX post_topic_resolutions_queue_idx
+	ON post_topic_resolutions(status, next_retry_at, updated_at);
+`,
+	},
 ];
 
 function rowString(row: Row, key: string): string {
@@ -621,12 +664,14 @@ function mapEvent(row: Row): NewsEvent {
 export class NewsDatabase {
 	readonly #database: DatabaseSync;
 
-	constructor(databasePath?: ":memory:") {
+	constructor(
+		databasePath = process.env.NEWS_DATABASE_PATH ?? "./data/news.db",
+	) {
 		if (databasePath === ":memory:") {
 			this.#database = new DatabaseSync(":memory:", { timeout: 5_000 });
 		} else {
-			mkdirSync("./data", { recursive: true });
-			this.#database = new DatabaseSync("./data/news.db", { timeout: 5_000 });
+			mkdirSync(dirname(databasePath), { recursive: true });
+			this.#database = new DatabaseSync(databasePath, { timeout: 5_000 });
 		}
 		this.#database.exec("PRAGMA foreign_keys = ON");
 		if (databasePath !== ":memory:")
@@ -1013,6 +1058,7 @@ ON CONFLICT(post_id) DO UPDATE SET
 		limit = 100,
 		analysisVersion = 1,
 		retryFailedBefore = new Date(0).toISOString(),
+		publishedSince = new Date(0).toISOString(),
 	): PostForTriage[] {
 		const rows = this.#database
 			.prepare(`
@@ -1029,6 +1075,7 @@ JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
 JOIN post_articles ON post_articles.post_id = posts.id
 LEFT JOIN post_topic_analyses ON post_topic_analyses.post_id = posts.id
 WHERE post_articles.status IN ('available', 'not_article')
+	AND posts.published_at >= ?
 	AND (
 		post_topic_analyses.post_id IS NULL
 		OR post_topic_analyses.analysis_version < ?
@@ -1040,7 +1087,13 @@ WHERE post_articles.status IN ('available', 'not_article')
 	)
 ORDER BY posts.published_at DESC
 LIMIT ?`)
-			.all(analysisVersion, analysisVersion, retryFailedBefore, limit) as Row[];
+			.all(
+				publishedSince,
+				analysisVersion,
+				analysisVersion,
+				retryFailedBefore,
+				limit,
+			) as Row[];
 		return rows.map((row) => ({
 			...mapPost(row),
 			accountHandle: rowString(row, "account_handle"),
@@ -1057,24 +1110,25 @@ LIMIT ?`)
 		analysisVersion: number;
 		resolutionVersion: number;
 		now: string;
-	}): void {
-		this.#database.exec('BEGIN IMMEDIATE');
+	}): { queuedForResolution: boolean } {
+		this.#database.exec("BEGIN IMMEDIATE");
 		try {
+			let queuedForResolution = false;
 			this.savePostTopicAnalysis(
 				input.analysis,
 				input.analysisVersion,
 				input.now,
 			);
-			if (input.analysis.decision === 'ignore') {
+			if (input.analysis.decision === "ignore") {
 				const previous = this.#database
 					.prepare(`
 SELECT topic_id FROM topic_posts WHERE post_id = ?`)
 					.get(input.analysis.postId) as Row | undefined;
 				this.#database
-					.prepare('DELETE FROM topic_posts WHERE post_id = ?')
+					.prepare("DELETE FROM topic_posts WHERE post_id = ?")
 					.run(input.analysis.postId);
 				this.#database
-					.prepare('DELETE FROM post_topic_resolutions WHERE post_id = ?')
+					.prepare("DELETE FROM post_topic_resolutions WHERE post_id = ?")
 					.run(input.analysis.postId);
 				if (previous) {
 					this.#database
@@ -1083,18 +1137,25 @@ UPDATE topics SET status = 'archived', updated_at = ?
 WHERE id = ? AND NOT EXISTS (
 	SELECT 1 FROM topic_posts WHERE topic_posts.topic_id = topics.id
 )`)
-						.run(input.now, rowString(previous, 'topic_id'));
+						.run(input.now, rowString(previous, "topic_id"));
 				}
 			} else {
-				this.queuePostTopicResolution(
-					input.analysis.postId,
-					input.resolutionVersion,
-					input.now,
-				);
+				const existingTopic = this.#database
+					.prepare("SELECT 1 FROM topic_posts WHERE post_id = ?")
+					.get(input.analysis.postId);
+				if (!existingTopic) {
+					this.queuePostTopicResolution(
+						input.analysis.postId,
+						input.resolutionVersion,
+						input.now,
+					);
+					queuedForResolution = true;
+				}
 			}
-			this.#database.exec('COMMIT');
+			this.#database.exec("COMMIT");
+			return { queuedForResolution };
 		} catch (error) {
-			if (this.#database.isTransaction) this.#database.exec('ROLLBACK');
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
 			throw error;
 		}
 	}
@@ -1104,7 +1165,8 @@ WHERE id = ? AND NOT EXISTS (
 		resolutionVersion: number,
 		now: string,
 	): void {
-		this.#database.prepare(`
+		this.#database
+			.prepare(`
 INSERT INTO post_topic_resolutions(
 	post_id, status, decision, attempt_count, resolution_version, created_at, updated_at
 ) VALUES (?, 'pending', NULL, 0, ?, ?, ?)
@@ -1118,38 +1180,56 @@ ON CONFLICT(post_id) DO UPDATE SET
 
 	listPendingTopicResolutions(
 		limit: number,
-		resolutionVersion: number,
+		_resolutionVersion: number,
 		now: string,
+		publishedSince = new Date(0).toISOString(),
 	): PendingTopicResolution[] {
-		const rows = this.#database.prepare(`
-SELECT resolutions.post_id, posts.x_post_id, posts.published_at,
-	posts.quoted_x_post_id, posts.raw_payload_json,
+		const rows = this.#database
+			.prepare(`
+SELECT resolutions.post_id, posts.x_post_id, posts.account_id,
+	monitored_accounts.handle AS account_handle, posts.post_type, posts.content,
+	posts.published_at, posts.quoted_x_post_id, posts.quoted_post_json,
+	posts.raw_payload_json, post_articles.title AS article_title,
+	post_articles.full_text AS article_text,
 	analyses.organization_ids_json, analyses.unknown_organizations_json,
 	analyses.topic_candidate_json, resolutions.attempt_count,
 	resolutions.resolution_version
 FROM post_topic_resolutions resolutions
 JOIN post_topic_analyses analyses ON analyses.post_id = resolutions.post_id
 JOIN posts ON posts.id = resolutions.post_id
+JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
+LEFT JOIN post_articles ON post_articles.post_id = posts.id
 WHERE analyses.status = 'success'
 	AND analyses.decision = 'important'
 	AND analyses.topic_candidate_json IS NOT NULL
+	AND posts.published_at >= ?
 	AND (
-		resolutions.resolution_version < ?
-		OR resolutions.status = 'pending'
+		resolutions.status = 'pending'
 		OR (
-			resolutions.status IN ('failed', 'deferred')
+			resolutions.status = 'failed'
 			AND resolutions.next_retry_at IS NOT NULL
 			AND resolutions.next_retry_at <= ?
 		)
 	)
 ORDER BY posts.published_at DESC, posts.x_post_id DESC
-LIMIT ?`).all(resolutionVersion, now, limit) as Row[];
+LIMIT ?`)
+			.all(publishedSince, now, limit) as Row[];
 		return rows.map((row) => ({
 			postId: rowString(row, "post_id"),
 			xPostId: rowString(row, "x_post_id"),
+			accountId: rowString(row, "account_id"),
+			accountHandle: rowString(row, "account_handle"),
+			postType: rowString(row, "post_type") as StoredPost["postType"],
+			content: rowString(row, "content"),
 			publishedAt: rowString(row, "published_at"),
 			quotedXPostId: nullableString(row, "quoted_x_post_id"),
+			quotedPost: parseJson<Record<string, unknown> | null>(
+				row.quoted_post_json,
+				null,
+			),
 			rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json, {}),
+			articleTitle: nullableString(row, "article_title"),
+			articleText: nullableString(row, "article_text"),
 			organizationIds: parseJson<string[]>(row.organization_ids_json, []),
 			unknownOrganizationCandidates: parseJson<string[]>(
 				row.unknown_organizations_json,
@@ -1234,7 +1314,8 @@ WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`)
 	}
 
 	listTopicsForSearch(from: string, to: string): TopicSearchDocument[] {
-		const rows = this.#database.prepare(`
+		const rows = this.#database
+			.prepare(`
 SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
 	topics.summary_en, topics.topic_type, topics.status, topics.revision,
 	topics.first_seen_at, topics.last_updated_at,
@@ -1252,7 +1333,10 @@ ORDER BY posts.published_at DESC, posts.x_post_id DESC`)
 			.all(from, to) as Row[];
 		const documents = new Map<
 			string,
-			TopicSearchDocument & { organizationSet: Set<string>; postIds: Set<string> }
+			TopicSearchDocument & {
+				organizationSet: Set<string>;
+				postIds: Set<string>;
+			}
 		>();
 		for (const row of rows) {
 			const topicId = rowString(row, "id");
@@ -1289,11 +1373,16 @@ ORDER BY posts.published_at DESC, posts.x_post_id DESC`)
 					publishedAt: rowString(row, "published_at"),
 					publisherHandle: rowString(row, "publisher_handle"),
 					content: rowString(row, "content"),
-					rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json, {}),
+					rawPayload: parseJson<Record<string, unknown>>(
+						row.raw_payload_json,
+						{},
+					),
 				});
 			}
 		}
-		return [...documents.values()].map(({ organizationSet: _, postIds: __, ...document }) => document);
+		return [...documents.values()].map(
+			({ organizationSet: _, postIds: __, ...document }) => document,
+		);
 	}
 
 	listActiveTopics(since: string): NewsTopic[] {
@@ -1533,130 +1622,184 @@ WHERE id = ? AND NOT EXISTS (
 		}
 	}
 
-	commitTopicResolution(input: {
-		postId: string;
+	commitTopicBatch(input: {
+		postIds: string[];
 		decision: "attach" | "create";
 		targetTopicId: string | null;
 		expectedTopicRevision: number | null;
-		confidence: number;
-		reason: string;
+		topic: TopicCandidate | null;
 		searchTrace: unknown;
 		modelRunId: string | null;
 		resolutionVersion: number;
 		now: string;
-	}): { topicId: string; topicCreated: boolean } {
+	}): { topicId: string; revision: number; topicCreated: boolean } {
+		const postIds = [...new Set(input.postIds)];
+		if (postIds.length === 0) throw new Error("Topic assignment has no Posts");
+		const postIdsJson = JSON.stringify(postIds);
 		this.#database.exec("BEGIN IMMEDIATE");
 		try {
-			const row = this.#database.prepare(`
-SELECT analyses.decision, analyses.organization_ids_json,
-	analyses.topic_candidate_json, posts.published_at
+			const rows = this.#database
+				.prepare(`
+SELECT analyses.post_id, analyses.organization_ids_json, posts.published_at,
+	resolutions.status AS resolution_status
 FROM post_topic_analyses analyses
 JOIN posts ON posts.id = analyses.post_id
-WHERE analyses.post_id = ? AND analyses.status = 'success'
-	AND analyses.decision = 'important'`)
-				.get(input.postId) as Row | undefined;
-			if (!row) throw new Error(`Tracked analysis not found: ${input.postId}`);
-			const candidate = parseJson<TopicCandidate | null>(
-				row.topic_candidate_json,
-				null,
-			);
-			if (!candidate) throw new Error("Tracked analysis has no Topic candidate");
-			const organizationIds = parseJson<string[]>(row.organization_ids_json, []);
-			const publishedAt = rowString(row, "published_at");
-			const previous = this.#database.prepare(`
-SELECT topic_id FROM topic_posts WHERE post_id = ?`).get(input.postId) as Row | undefined;
-			const previousTopicId = previous ? rowString(previous, "topic_id") : null;
+JOIN post_topic_resolutions resolutions ON resolutions.post_id = analyses.post_id
+WHERE analyses.post_id IN (SELECT value FROM json_each(?))
+	AND analyses.status = 'success' AND analyses.decision = 'important'
+	AND analyses.topic_candidate_json IS NOT NULL`)
+				.all(postIdsJson) as Row[];
+			if (rows.length !== postIds.length) {
+				throw new Error(
+					"Topic assignment contains an unavailable important Post",
+				);
+			}
+			const alreadyAssigned = this.#database
+				.prepare(`
+SELECT post_id FROM topic_posts
+WHERE post_id IN (SELECT value FROM json_each(?)) LIMIT 1`)
+				.get(postIdsJson) as Row | undefined;
+			if (alreadyAssigned) {
+				throw new Error(
+					`Post is already assigned to a Topic: ${rowString(alreadyAssigned, "post_id")}`,
+				);
+			}
+			const organizationIds = new Set<string>();
+			const publishedAt = rows.map((row) => {
+				for (const organizationId of parseJson<string[]>(
+					row.organization_ids_json,
+					[],
+				))
+					organizationIds.add(organizationId);
+				return rowString(row, "published_at");
+			});
+			const firstPublishedAt = [...publishedAt].sort()[0];
+			const lastPublishedAt = [...publishedAt].sort().at(-1);
+			if (!firstPublishedAt || !lastPublishedAt) {
+				throw new Error("Topic assignment has no publication time");
+			}
+
 			let topicId: string;
+			let revision: number;
 			let topicCreated = false;
-			if (input.decision === "attach") {
-				if (!input.targetTopicId || input.expectedTopicRevision === null) {
-					throw new Error("Attach resolution is missing Topic revision data");
+			if (input.decision === "create") {
+				if (
+					input.targetTopicId !== null ||
+					input.expectedTopicRevision !== null
+				) {
+					throw new Error("New Topic assignment references an existing Topic");
 				}
-				topicId = input.targetTopicId;
-				const updated = this.#database.prepare(`
-UPDATE topics
-SET last_updated_at = ?, updated_at = ?, revision = revision + 1
-WHERE id = ? AND status = 'active' AND revision = ?`)
-					.run(input.now, input.now, topicId, input.expectedTopicRevision);
-				if (updated.changes !== 1) {
-					throw new Error(`Topic changed before resolution commit: ${topicId}`);
-				}
-			} else {
-				if (input.targetTopicId !== null || input.expectedTopicRevision !== null) {
-					throw new Error("Create resolution unexpectedly references an existing Topic");
-				}
+				if (!input.topic)
+					throw new Error("New Topic assignment has no Topic content");
 				topicId = randomUUID();
-				this.#database.prepare(`
+				revision = 0;
+				topicCreated = true;
+				this.#database
+					.prepare(`
 INSERT INTO topics(
 	id, title_zh, title_en, summary_zh, summary_en, topic_type,
 	status, first_seen_at, last_updated_at, created_at, updated_at, revision
 ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 0)`)
 					.run(
 						topicId,
-						candidate.titleZh,
-						candidate.titleEn,
-						candidate.summaryZh,
-						candidate.summaryEn,
-						candidate.type,
-						publishedAt,
-						publishedAt,
+						input.topic.titleZh,
+						input.topic.titleEn,
+						input.topic.summaryZh,
+						input.topic.summaryEn,
+						input.topic.type,
+						firstPublishedAt,
+						lastPublishedAt,
 						input.now,
 						input.now,
 					);
-				topicCreated = true;
+			} else {
+				if (!input.targetTopicId || input.expectedTopicRevision === null) {
+					throw new Error("Existing Topic assignment has no Topic reference");
+				}
+				topicId = input.targetTopicId;
+				const updated = input.topic
+					? this.#database
+							.prepare(`
+UPDATE topics SET
+	title_zh = ?, title_en = ?, summary_zh = ?, summary_en = ?, topic_type = ?,
+	last_updated_at = MAX(last_updated_at, ?), updated_at = ?, revision = revision + 1
+WHERE id = ? AND status = 'active' AND revision = ?`)
+							.run(
+								input.topic.titleZh,
+								input.topic.titleEn,
+								input.topic.summaryZh,
+								input.topic.summaryEn,
+								input.topic.type,
+								lastPublishedAt,
+								input.now,
+								topicId,
+								input.expectedTopicRevision,
+							)
+					: this.#database
+							.prepare(`
+UPDATE topics SET last_updated_at = MAX(last_updated_at, ?),
+	updated_at = ?, revision = revision + 1
+WHERE id = ? AND status = 'active' AND revision = ?`)
+							.run(
+								lastPublishedAt,
+								input.now,
+								topicId,
+								input.expectedTopicRevision,
+							);
+				if (updated.changes !== 1) {
+					throw new Error(`Topic changed before batch commit: ${topicId}`);
+				}
+				revision = input.expectedTopicRevision + 1;
 			}
-			for (const organizationId of new Set(organizationIds)) {
-				this.#database.prepare(`
+
+			for (const organizationId of organizationIds) {
+				this.#database
+					.prepare(`
 INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
 					.run(topicId, organizationId);
 			}
-			this.#database.prepare(`
+			for (const postId of postIds) {
+				this.#database
+					.prepare(`
 INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(post_id) DO UPDATE SET
-	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
-				.run(input.postId, topicId, rowString(row, "decision"), input.now);
-			if (previousTopicId && previousTopicId !== topicId) {
-				this.#database.prepare(`
-UPDATE topics SET status = 'archived', updated_at = ?
-WHERE id = ? AND NOT EXISTS (
-	SELECT 1 FROM topic_posts WHERE topic_posts.topic_id = topics.id
-)`).run(input.now, previousTopicId);
-			}
-			this.#database.prepare(`
+VALUES (?, ?, 'important', ?)`)
+					.run(postId, topicId, input.now);
+				this.#database
+					.prepare(`
 UPDATE post_topic_resolutions SET
-	status = 'resolved', decision = ?, target_topic_id = ?, confidence = ?,
-	reason = ?, error = NULL, next_retry_at = NULL,
-	resolution_version = ?, resolved_at = ?, updated_at = ?
-WHERE post_id = ?`).run(
-				input.decision,
-				topicId,
-				input.confidence,
-				input.reason,
-				input.resolutionVersion,
-				input.now,
-				input.now,
-				input.postId,
-			);
-			this.#database.prepare(`
+	status = 'resolved', decision = ?, target_topic_id = ?, confidence = NULL,
+	reason = ?, error = NULL, next_retry_at = NULL, resolution_version = ?,
+	resolved_at = ?, updated_at = ?
+WHERE post_id = ?`)
+					.run(
+						input.decision,
+						topicId,
+						`batch_agent_${input.decision}`,
+						input.resolutionVersion,
+						input.now,
+						input.now,
+						postId,
+					);
+				this.#database
+					.prepare(`
 INSERT INTO topic_resolution_events(
 	id, post_id, decision, from_topic_id, to_topic_id, resolver_version,
 	confidence, reason, search_trace_json, model_run_id, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-				randomUUID(),
-				input.postId,
-				input.decision,
-				previousTopicId,
-				topicId,
-				input.resolutionVersion,
-				input.confidence,
-				input.reason.slice(0, 500),
-				JSON.stringify(input.searchTrace),
-				input.modelRunId,
-				input.now,
-			);
+) VALUES (?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?)`)
+					.run(
+						randomUUID(),
+						postId,
+						input.decision,
+						topicId,
+						input.resolutionVersion,
+						`batch_agent_${input.decision}`,
+						JSON.stringify(input.searchTrace),
+						input.modelRunId,
+						input.now,
+					);
+			}
 			this.#database.exec("COMMIT");
-			return { topicId, topicCreated };
+			return { topicId, revision, topicCreated };
 		} catch (error) {
 			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
 			throw error;
@@ -1670,64 +1813,20 @@ INSERT INTO topic_resolution_events(
 		resolutionVersion: number;
 		now: string;
 	}): void {
-		this.#database.prepare(`
+		this.#database
+			.prepare(`
 UPDATE post_topic_resolutions SET
 	status = 'failed', decision = NULL, target_topic_id = NULL,
 	attempt_count = attempt_count + 1, next_retry_at = ?, error = ?,
 	resolution_version = ?, updated_at = ?
-WHERE post_id = ?`).run(
-			input.nextRetryAt,
-			input.error.slice(0, 500),
-			input.resolutionVersion,
-			input.now,
-			input.postId,
-		);
-	}
-
-	markTopicResolutionDeferred(input: {
-		postId: string;
-		confidence: number;
-		reason: string;
-		nextRetryAt: string | null;
-		searchTrace: unknown;
-		modelRunId: string | null;
-		resolutionVersion: number;
-		now: string;
-	}): void {
-		this.#database.exec("BEGIN IMMEDIATE");
-		try {
-			this.#database.prepare(`
-UPDATE post_topic_resolutions SET
-	status = 'deferred', decision = 'defer', target_topic_id = NULL,
-	confidence = ?, reason = ?, attempt_count = attempt_count + 1,
-	next_retry_at = ?, error = NULL, resolution_version = ?, updated_at = ?
-WHERE post_id = ?`).run(
-				input.confidence,
-				input.reason.slice(0, 500),
+WHERE post_id = ?`)
+			.run(
 				input.nextRetryAt,
+				input.error.slice(0, 500),
 				input.resolutionVersion,
 				input.now,
 				input.postId,
 			);
-			this.#database.prepare(`
-INSERT INTO topic_resolution_events(
-	id, post_id, decision, resolver_version, confidence, reason,
-	search_trace_json, model_run_id, created_at
-) VALUES (?, ?, 'defer', ?, ?, ?, ?, ?, ?)`).run(
-				randomUUID(),
-				input.postId,
-				input.resolutionVersion,
-				input.confidence,
-				input.reason.slice(0, 500),
-				JSON.stringify(input.searchTrace),
-				input.modelRunId,
-				input.now,
-			);
-			this.#database.exec("COMMIT");
-		} catch (error) {
-			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
-			throw error;
-		}
 	}
 
 	listPostsForMetricRefresh(): PostForMetricRefresh[] {

@@ -1,171 +1,169 @@
 import { randomUUID } from "node:crypto";
-import { TOPIC_RESOLUTION_VERSION } from "./config";
+import { TOPIC_MATCH_WINDOW_HOURS, TOPIC_RESOLUTION_VERSION } from "./config";
 import type { NewsDatabase } from "./database";
-import { buildTopicSearchSubject } from "./topic-search";
+import type { PendingTopicResolution, TopicResolutionBatchPost } from "./types";
 import {
-	validateToolTopicResolution,
-	type ValidatedTopicResolution,
-} from "./topic-resolution";
-import type { StructuredToolTopicResolution } from "./schemas";
-import { createSearchActiveTopics, type TopicSearchToolSession } from "../tools/search-active-topics";
-import type { PendingTopicResolution } from "./types";
+	createTopicBatchTools,
+	type TopicBatchToolSession,
+} from "../tools/topic-batch-tools";
 
-export type TopicResolutionRequester = (options: {
-	pending: PendingTopicResolution;
-	search: TopicSearchToolSession;
-}) => Promise<{
-	result: StructuredToolTopicResolution;
-	modelRunId: string | null;
-}>;
+export type TopicBatchRequester = (options: {
+	accountHandle: string;
+	posts: TopicResolutionBatchPost[];
+	sessionName: string;
+	toolSession: TopicBatchToolSession;
+}) => Promise<{ completed: true }>;
 
 export type TopicResolutionStats = {
+	accountBatchesAttempted: number;
+	accountBatchesCompleted: number;
 	postsAttempted: number;
 	postsResolved: number;
 	topicsCreated: number;
 	postsAttachedToTopics: number;
-	postsDeferred: number;
 	postsFailed: number;
 	errors: Array<{ scope: string; message: string }>;
 };
+
+function emptyStats(): TopicResolutionStats {
+	return {
+		accountBatchesAttempted: 0,
+		accountBatchesCompleted: 0,
+		postsAttempted: 0,
+		postsResolved: 0,
+		topicsCreated: 0,
+		postsAttachedToTopics: 0,
+		postsFailed: 0,
+		errors: [],
+	};
+}
 
 function errorMessage(error: unknown): string {
 	return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
-function nextRetryAt(
-	now: Date,
-	attemptCount: number,
-): string | null {
-	const delayHours = [1, 6, 24][Math.min(attemptCount, 2)];
-	if (delayHours === undefined || attemptCount >= 2) return null;
-	return new Date(now.getTime() + delayHours * 60 * 60 * 1_000).toISOString();
+function retryAt(now: Date, attemptCount: number): string {
+	const delayMinutes = Math.min(10 * 2 ** Math.min(attemptCount, 6), 6 * 60);
+	return new Date(now.getTime() + delayMinutes * 60 * 1_000).toISOString();
 }
 
-function traceJson(search: TopicSearchToolSession): Record<string, unknown> {
-	return { searches: search.trace };
+function accountBatches(
+	pending: PendingTopicResolution[],
+	maximumPosts: number,
+): PendingTopicResolution[][] {
+	const byAccount = new Map<string, PendingTopicResolution[]>();
+	for (const item of pending) {
+		const account = byAccount.get(item.accountId) ?? [];
+		account.push(item);
+		byAccount.set(item.accountId, account);
+	}
+	const batches: PendingTopicResolution[][] = [];
+	for (const posts of byAccount.values()) {
+		for (let index = 0; index < posts.length; index += maximumPosts) {
+			batches.push(posts.slice(index, index + maximumPosts));
+		}
+	}
+	return batches;
 }
 
-async function resolveOne(options: {
-	database: NewsDatabase;
-	pending: PendingTopicResolution;
-	requester: TopicResolutionRequester;
-}): Promise<{
-	resolution: ValidatedTopicResolution;
-	modelRunId: string | null;
-	search: TopicSearchToolSession;
-}> {
-	const subject = buildTopicSearchSubject(options.pending);
-	const search = createSearchActiveTopics({
-		database: options.database,
-		subject,
-	});
-	const response = await options.requester({ pending: options.pending, search });
-	return {
-		resolution: validateToolTopicResolution(response.result, search),
-		modelRunId: response.modelRunId,
-		search,
-	};
+function resolutionPosts(
+	posts: PendingTopicResolution[],
+): TopicResolutionBatchPost[] {
+	return posts.map((post, index) => ({ ...post, postRef: `p${index + 1}` }));
 }
 
 export async function runTopicResolutionBatch(options: {
 	database: NewsDatabase;
-	requester: TopicResolutionRequester;
+	requester: TopicBatchRequester;
 	limit?: number;
+	accountBatchSize?: number;
 	now?: () => Date;
 }): Promise<TopicResolutionStats> {
 	const now = options.now ?? (() => new Date());
 	const attemptedAt = now();
+	const accountBatchSize = options.accountBatchSize ?? 20;
+	if (
+		!Number.isInteger(accountBatchSize) ||
+		accountBatchSize < 1 ||
+		accountBatchSize > 20
+	) {
+		throw new Error("accountBatchSize must be an integer between 1 and 20");
+	}
+	const activeSince = new Date(
+		attemptedAt.getTime() - TOPIC_MATCH_WINDOW_HOURS * 60 * 60 * 1_000,
+	).toISOString();
 	const pending = options.database.listPendingTopicResolutions(
-		options.limit ?? 100,
+		options.limit ?? 500,
 		TOPIC_RESOLUTION_VERSION,
 		attemptedAt.toISOString(),
+		activeSince,
 	);
-	const stats: TopicResolutionStats = {
-		postsAttempted: pending.length,
-		postsResolved: 0,
-		topicsCreated: 0,
-		postsAttachedToTopics: 0,
-		postsDeferred: 0,
-		postsFailed: 0,
-		errors: [],
-	};
-	for (const item of pending) {
+	const stats = emptyStats();
+	stats.postsAttempted = pending.length;
+	let sessionIndex = 0;
+	for (const accountPosts of accountBatches(pending, accountBatchSize)) {
+		const first = accountPosts[0];
+		if (!first) continue;
+		sessionIndex += 1;
+		stats.accountBatchesAttempted += 1;
+		const posts = resolutionPosts(accountPosts);
+		const sessionName = [
+			"topic-batch",
+			first.accountHandle.toLowerCase(),
+			sessionIndex,
+			randomUUID().slice(0, 8),
+		].join("-");
+		const toolSession = createTopicBatchTools({
+			database: options.database,
+			posts,
+			activeSince,
+			modelRunId: sessionName,
+			now,
+		});
 		try {
-			const { resolution, modelRunId, search } = await resolveOne({
-				database: options.database,
-				pending: item,
-				requester: options.requester,
+			const result = await options.requester({
+				accountHandle: first.accountHandle,
+				posts,
+				sessionName,
+				toolSession,
 			});
-			const resolvedAt = now().toISOString();
-			if (resolution.decision === "defer") {
-				options.database.markTopicResolutionDeferred({
-					postId: item.postId,
-					reason: `${resolution.reasonCode}: ${resolution.reason}`,
-					confidence: resolution.confidence,
-					searchTrace: traceJson(search),
-					modelRunId,
-					resolutionVersion: TOPIC_RESOLUTION_VERSION,
-					nextRetryAt: nextRetryAt(now(), item.attemptCount),
-					now: resolvedAt,
-				});
-				stats.postsDeferred += 1;
-				continue;
+			if (!result.completed || !toolSession.isFinished()) {
+				throw new Error("Topic Agent did not finish every Post assignment");
 			}
-			const committed = options.database.commitTopicResolution({
-				postId: item.postId,
-				decision: resolution.decision,
-				targetTopicId: resolution.decision === "attach"
-					? resolution.topicId
-					: null,
-				expectedTopicRevision: resolution.decision === "attach"
-					? resolution.expectedRevision
-					: null,
-				confidence: resolution.confidence,
-				reason: resolution.reason,
-				searchTrace: traceJson(search),
-				modelRunId,
-				resolutionVersion: TOPIC_RESOLUTION_VERSION,
-				now: resolvedAt,
-			});
-			stats.postsResolved += 1;
-			stats.postsAttachedToTopics += 1;
-			if (committed.topicCreated) stats.topicsCreated += 1;
+			stats.accountBatchesCompleted += 1;
 		} catch (error) {
 			const message = errorMessage(error);
 			const failedAt = now();
-			if (item.attemptCount >= 2) {
-				options.database.markTopicResolutionDeferred({
-					postId: item.postId,
-					reason: `search_failed: ${message}`,
-					confidence: 0,
-					searchTrace: { searches: [] },
-					modelRunId: null,
-					resolutionVersion: TOPIC_RESOLUTION_VERSION,
-					nextRetryAt: null,
-					now: failedAt.toISOString(),
-				});
-				stats.postsDeferred += 1;
-			} else {
+			const remaining = new Set(toolSession.remainingPostRefs());
+			for (const post of posts) {
+				if (!remaining.has(post.postRef)) continue;
 				options.database.markTopicResolutionFailed({
-					postId: item.postId,
+					postId: post.postId,
 					error: message,
+					nextRetryAt: retryAt(failedAt, post.attemptCount),
 					resolutionVersion: TOPIC_RESOLUTION_VERSION,
-					nextRetryAt: nextRetryAt(failedAt, item.attemptCount) ??
-						new Date(failedAt.getTime() + 24 * 60 * 60 * 1_000).toISOString(),
 					now: failedAt.toISOString(),
 				});
 				stats.postsFailed += 1;
 			}
-			stats.errors.push({ scope: `topic-resolution:${item.xPostId}`, message });
+			stats.errors.push({
+				scope: `topic-resolution:@${first.accountHandle}`,
+				message,
+			});
 		}
+		const remainingCount = toolSession.remainingPostRefs().length;
+		stats.postsResolved += posts.length - remainingCount;
+		stats.topicsCreated += toolSession.stats.topicsCreated;
+		stats.postsAttachedToTopics += toolSession.stats.postsAttachedToTopics;
 	}
 	return stats;
 }
 
 export async function runTopicResolutionBacklog(options: {
 	database: NewsDatabase;
-	requester: TopicResolutionRequester;
+	requester: TopicBatchRequester;
 	batchSize?: number;
+	accountBatchSize?: number;
 	now?: () => Date;
 }): Promise<TopicResolutionStats> {
 	const now = options.now ?? (() => new Date());
@@ -175,36 +173,34 @@ export async function runTopicResolutionBacklog(options: {
 		name: "topic-resolution",
 		owner,
 		now: startedAt.toISOString(),
-		expiresAt: new Date(startedAt.getTime() + 60 * 60 * 1_000).toISOString(),
+		expiresAt: new Date(
+			startedAt.getTime() + 2 * 60 * 60 * 1_000,
+		).toISOString(),
 	});
-	if (!acquired) throw new Error("Another topic-resolution job is already running");
-	const total: TopicResolutionStats = {
-		postsAttempted: 0,
-		postsResolved: 0,
-		topicsCreated: 0,
-		postsAttachedToTopics: 0,
-		postsDeferred: 0,
-		postsFailed: 0,
-		errors: [],
-	};
+	if (!acquired)
+		throw new Error("Another topic-resolution job is already running");
+	const total = emptyStats();
 	try {
 		while (true) {
 			const batch = await runTopicResolutionBatch({
 				database: options.database,
 				requester: options.requester,
-				limit: options.batchSize ?? 100,
+				limit: options.batchSize ?? 500,
+				accountBatchSize: options.accountBatchSize,
 				now,
 			});
 			for (const key of [
+				"accountBatchesAttempted",
+				"accountBatchesCompleted",
 				"postsAttempted",
 				"postsResolved",
 				"topicsCreated",
 				"postsAttachedToTopics",
-				"postsDeferred",
 				"postsFailed",
-			] as const) total[key] += batch[key];
+			] as const)
+				total[key] += batch[key];
 			total.errors.push(...batch.errors);
-			if (batch.postsAttempted < (options.batchSize ?? 100)) break;
+			if (batch.postsAttempted < (options.batchSize ?? 500)) break;
 		}
 		return total;
 	} finally {

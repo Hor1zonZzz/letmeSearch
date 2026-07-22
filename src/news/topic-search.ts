@@ -264,6 +264,7 @@ export function searchActiveTopics(options: {
 	subject: TopicSearchSubject;
 	input: TopicSearchInput;
 	windowHours?: number;
+	activeSince?: string;
 	offset?: number;
 }): {
 	searchId: string;
@@ -279,7 +280,14 @@ export function searchActiveTopics(options: {
 	const anchor = new Date(options.subject.publishedAt).getTime();
 	if (!Number.isFinite(anchor)) throw new Error("Topic search subject has invalid publishedAt");
 	const radius = (options.windowHours ?? 72) * 60 * 60 * 1_000;
-	const from = new Date(anchor - radius).toISOString();
+	const relativeFrom = anchor - radius;
+	const activeSince = options.activeSince
+		? new Date(options.activeSince).getTime()
+		: Number.NEGATIVE_INFINITY;
+	if (Number.isNaN(activeSince)) {
+		throw new Error("Topic search activeSince is invalid");
+	}
+	const from = new Date(Math.max(relativeFrom, activeSince)).toISOString();
 	const to = new Date(anchor + radius).toISOString();
 	const subjectTokens = tokens([
 		options.subject.titleZh,

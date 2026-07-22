@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { defineWorkflow } from "@flue/runtime";
+import { defineWorkflow, invoke } from "@flue/runtime";
 import * as v from "valibot";
 import agent from "../agents/news-triage";
+import newsTopicResolve from "./news-topic-resolve";
 import {
 	hydratePostArticles,
 	type ArticleHydrationStats,
@@ -45,6 +46,7 @@ const topicStatsSchema = v.object({
 const outputSchema = v.object({
 	articleStats: articleStatsSchema,
 	topicStats: topicStatsSchema,
+	topicResolutionRunId: v.string(),
 });
 
 export default defineWorkflow({
@@ -109,7 +111,12 @@ export default defineWorkflow({
 				},
 			});
 
-			return { articleStats, topicStats };
+			const resolution = await invoke(newsTopicResolve, { input: {} });
+			return {
+				articleStats,
+				topicStats,
+				topicResolutionRunId: resolution.runId,
+			};
 		} finally {
 			database.releaseJobLock("news-triage-workflow", owner);
 			database.close();

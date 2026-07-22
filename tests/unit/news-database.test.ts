@@ -97,7 +97,7 @@ describe('official news database', () => {
 		]);
 	});
 
-	it('commits Topic resolutions with optimistic revisions', () => {
+	it('commits Topic batches with optimistic revisions', () => {
 		const db = database();
 		db.seedAccounts([{ handle: 'OpenAI', organization: 'OpenAI' }]);
 		db.seedOrganizations([
@@ -131,25 +131,30 @@ describe('official news database', () => {
 		};
 		saveAnalysis(first.id);
 		saveAnalysis(second.id);
-		const created = db.commitTopicResolution({
-			postId: first.id,
+		const topic = {
+			titleZh: 'OpenAI 发布 GPT Example',
+			titleEn: 'OpenAI Releases GPT Example',
+			summaryZh: 'OpenAI 发布测试模型。',
+			summaryEn: 'OpenAI released a test model.',
+			type: 'model_release' as const,
+		};
+		const created = db.commitTopicBatch({
+			postIds: [first.id],
 			decision: 'create',
 			targetTopicId: null,
 			expectedTopicRevision: null,
-			confidence: 0.95,
-			reason: 'No matching Topic',
+			topic,
 			searchTrace: { searches: [] },
 			modelRunId: 'run-1',
 			resolutionVersion: 1,
 			now: '2026-07-22T10:02:00.000Z',
 		});
-		db.commitTopicResolution({
-			postId: second.id,
+		db.commitTopicBatch({
+			postIds: [second.id],
 			decision: 'attach',
 			targetTopicId: created.topicId,
 			expectedTopicRevision: 0,
-			confidence: 0.94,
-			reason: 'Same release',
+			topic: null,
 			searchTrace: { searches: ['search-1'] },
 			modelRunId: 'run-2',
 			resolutionVersion: 1,

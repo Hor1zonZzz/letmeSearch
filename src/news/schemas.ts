@@ -1,5 +1,5 @@
-import * as v from 'valibot';
-import { ORGANIZATION_IDS } from './organizations';
+import * as v from "valibot";
+import { ORGANIZATION_IDS } from "./organizations";
 
 const boundedText = (minimum: number, maximum: number) =>
 	v.pipe(v.string(), v.minLength(minimum), v.maxLength(maximum));
@@ -7,7 +7,7 @@ const boundedText = (minimum: number, maximum: number) =>
 export const postAnalysisSchema = v.object({
 	postId: boundedText(1, 100),
 	isImportant: v.boolean(),
-	category: v.picklist(['ai_tech', 'ai_funding', 'other']),
+	category: v.picklist(["ai_tech", "ai_funding", "other"]),
 	organization: v.pipe(v.string(), v.maxLength(120)),
 	subject: v.pipe(v.string(), v.maxLength(200)),
 	action: v.pipe(v.string(), v.maxLength(80)),
@@ -72,37 +72,9 @@ export const topicPostAnalysisBatchSchema = v.object({
 	analyses: v.pipe(v.array(topicPostAnalysisSchema), v.maxLength(100)),
 });
 
-export const toolTopicResolutionSchema = v.variant("decision", [
-	v.object({
-		decision: v.literal("attach"),
-		topicId: boundedText(1, 100),
-		expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
-		searchId: boundedText(1, 100),
-		confidence: v.pipe(v.number(), v.minValue(0), v.maxValue(1)),
-		reason: boundedText(1, 300),
-	}),
-	v.object({
-		decision: v.literal("create"),
-		successfulSearchIds: v.pipe(
-			v.array(boundedText(1, 100)),
-			v.minLength(1),
-			v.maxLength(3),
-		),
-		confidence: v.pipe(v.number(), v.minValue(0), v.maxValue(1)),
-		reason: boundedText(1, 300),
-	}),
-	v.object({
-		decision: v.literal("defer"),
-		reasonCode: v.picklist([
-			"search_failed",
-			"ambiguous",
-			"budget_exhausted",
-			"low_confidence",
-		]),
-		confidence: v.pipe(v.number(), v.minValue(0), v.maxValue(1)),
-		reason: boundedText(1, 300),
-	}),
-]);
+export const topicBatchCompletionSchema = v.object({
+	completed: v.literal(true),
+});
 
 export const reportDraftSchema = v.object({
 	headline: boundedText(1, 200),
@@ -118,7 +90,6 @@ export const reportDraftSchema = v.object({
 export type PostAnalysis = v.InferOutput<typeof postAnalysisSchema>;
 export type PostAnalysisBatch = v.InferOutput<typeof postAnalysisBatchSchema>;
 export type StructuredReportDraft = v.InferOutput<typeof reportDraftSchema>;
-export type StructuredTopicPostAnalysis = v.InferOutput<typeof topicPostAnalysisSchema>;
-export type StructuredToolTopicResolution = v.InferOutput<
-	typeof toolTopicResolutionSchema
+export type StructuredTopicPostAnalysis = v.InferOutput<
+	typeof topicPostAnalysisSchema
 >;
