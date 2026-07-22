@@ -1,27 +1,13 @@
 import { randomUUID } from "node:crypto";
-import {
-	TOPIC_ANALYSIS_VERSION,
-	TOPIC_MATCH_WINDOW_HOURS,
-} from "./config";
+import { TOPIC_ANALYSIS_VERSION, TOPIC_RESOLUTION_VERSION } from "./config";
 import type { NewsDatabase } from "./database";
 import { ORGANIZATIONS } from "./organizations";
-import { classifyTopicPosts, resolveTopicCandidate } from "./topic-classifier";
-import type {
-	NewsTopic,
-	PostForTriage,
-	PostTopicAnalysis,
-	TopicCandidate,
-} from "./types";
+import { classifyTopicPosts } from "./topic-classifier";
+import type { PostForTriage, PostTopicAnalysis } from "./types";
 
 export type TopicPostClassifier = (
 	posts: PostForTriage[],
 ) => Promise<PostTopicAnalysis[]>;
-
-export type TopicCandidateResolver = (options: {
-	candidate: TopicCandidate;
-	organizationIds: string[];
-	activeTopics: NewsTopic[];
-}) => Promise<string | null>;
 
 export type TopicPipelineStats = {
 	postsAttempted: number;
@@ -29,6 +15,7 @@ export type TopicPipelineStats = {
 	importantPosts: number;
 	observedPosts: number;
 	ignoredPosts: number;
+	postsQueuedForResolution: number;
 	topicsCreated: number;
 	postsAttachedToTopics: number;
 	errors: Array<{ scope: string; message: string }>;
@@ -93,7 +80,6 @@ async function analyzeBatches(options: {
 export async function runTopicPipeline(options: {
 	database: NewsDatabase;
 	classifier?: TopicPostClassifier;
-	resolver?: TopicCandidateResolver;
 	limit?: number;
 	now?: () => Date;
 }): Promise<TopicPipelineStats> {
@@ -114,12 +100,12 @@ export async function runTopicPipeline(options: {
 		importantPosts: 0,
 		observedPosts: 0,
 		ignoredPosts: 0,
+		postsQueuedForResolution: 0,
 		topicsCreated: 0,
 		postsAttachedToTopics: 0,
 		errors: [],
 	};
 	const classifier = options.classifier ?? classifyTopicPosts;
-	const resolver = options.resolver ?? resolveTopicCandidate;
 	const analyses = await analyzeBatches({
 		posts,
 		classifier,
@@ -133,27 +119,10 @@ export async function runTopicPipeline(options: {
 		if (!analysis) continue;
 		const analyzedAt = now().toISOString();
 		try {
-			let existingTopicId: string | null = null;
-			if (analysis.decision !== "ignore") {
-				const candidate = analysis.topicCandidate;
-				if (!candidate)
-					throw new Error("Tracked analysis has no topic candidate");
-				const since = new Date(
-					now().getTime() - TOPIC_MATCH_WINDOW_HOURS * 60 * 60 * 1_000,
-				).toISOString();
-				const activeTopics = database.listActiveTopics(since);
-				if (activeTopics.length > 0) {
-					existingTopicId = await resolver({
-						candidate,
-						organizationIds: analysis.organizationIds,
-						activeTopics,
-					});
-				}
-			}
-			const committed = database.commitPostTopicAnalysis({
+			database.commitPostTopicClassification({
 				analysis,
 				analysisVersion: TOPIC_ANALYSIS_VERSION,
-				existingTopicId,
+				resolutionVersion: TOPIC_RESOLUTION_VERSION,
 				now: analyzedAt,
 			});
 			stats.postsAnalyzed += 1;
@@ -161,8 +130,7 @@ export async function runTopicPipeline(options: {
 				stats.ignoredPosts += 1;
 				continue;
 			}
-			stats.postsAttachedToTopics += 1;
-			if (committed.topicCreated) stats.topicsCreated += 1;
+			stats.postsQueuedForResolution += 1;
 			if (analysis.decision === "important") stats.importantPosts += 1;
 			else stats.observedPosts += 1;
 		} catch (error) {
@@ -182,7 +150,6 @@ export async function runTopicPipeline(options: {
 export async function runTopicBacklog(options: {
 	database: NewsDatabase;
 	classifier?: TopicPostClassifier;
-	resolver?: TopicCandidateResolver;
 	batchSize?: number;
 	now?: () => Date;
 }): Promise<TopicPipelineStats> {
@@ -202,6 +169,7 @@ export async function runTopicBacklog(options: {
 		importantPosts: 0,
 		observedPosts: 0,
 		ignoredPosts: 0,
+		postsQueuedForResolution: 0,
 		topicsCreated: 0,
 		postsAttachedToTopics: 0,
 		errors: [],
@@ -211,7 +179,6 @@ export async function runTopicBacklog(options: {
 			const batch = await runTopicPipeline({
 				database: options.database,
 				classifier: options.classifier,
-				resolver: options.resolver,
 				limit: options.batchSize ?? 100,
 				now,
 			});
@@ -220,6 +187,7 @@ export async function runTopicBacklog(options: {
 			total.importantPosts += batch.importantPosts;
 			total.observedPosts += batch.observedPosts;
 			total.ignoredPosts += batch.ignoredPosts;
+			total.postsQueuedForResolution += batch.postsQueuedForResolution;
 			total.topicsCreated += batch.topicsCreated;
 			total.postsAttachedToTopics += batch.postsAttachedToTopics;
 			total.errors.push(...batch.errors);

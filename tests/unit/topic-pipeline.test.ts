@@ -56,7 +56,7 @@ describe("topic pipeline", () => {
 		for (const database of databases.splice(0)) database.close();
 	});
 
-	it("groups important and observed posts into one active topic", async () => {
+	it("queues important and observed posts without resolving Topics", async () => {
 		const database = new NewsDatabase(":memory:");
 		databases.push(database);
 		database.seedAccounts([{ handle: "claudeai", organization: "Anthropic" }]);
@@ -90,16 +90,9 @@ describe("topic pipeline", () => {
 			analysis(first.id, "important"),
 			analysis(second.id, "observe"),
 		]);
-		const resolver = vi.fn(async ({ activeTopics }) => {
-			const [topic] = activeTopics;
-			if (!topic) throw new Error("Expected an active topic");
-			return topic.id;
-		});
-
 		const stats = await runTopicPipeline({
 			database,
 			classifier,
-			resolver,
 			now: () => new Date("2026-07-22T11:00:00.000Z"),
 		});
 
@@ -108,16 +101,19 @@ describe("topic pipeline", () => {
 			postsAnalyzed: 2,
 			importantPosts: 1,
 			observedPosts: 1,
-			topicsCreated: 1,
-			postsAttachedToTopics: 2,
+			postsQueuedForResolution: 2,
+			topicsCreated: 0,
+			postsAttachedToTopics: 0,
 			errors: [],
 		});
-		expect(database.listActiveTopics("2026-07-15T00:00:00.000Z")).toHaveLength(
+		expect(database.listActiveTopics("2026-07-15T00:00:00.000Z")).toEqual([]);
+		expect(database.listPendingTopicResolutions(
+			10,
 			1,
-		);
+			"2026-07-22T11:00:00.000Z",
+		)).toHaveLength(2);
 		expect(database.listPostsForTopicAnalysis()).toEqual([]);
 		expect(classifier).toHaveBeenCalledOnce();
-		expect(resolver).toHaveBeenCalledOnce();
 	});
 
 	it("excludes topics whose newest source post is older than 72 hours", () => {
@@ -125,13 +121,20 @@ describe("topic pipeline", () => {
 		databases.push(database);
 		database.seedAccounts([{ handle: "claudeai", organization: "Anthropic" }]);
 		database.seedOrganizations([
-			{ id: "anthropic", nameZh: "Anthropic", nameEn: "Anthropic", aliases: [] },
+			{
+				id: "anthropic",
+				nameZh: "Anthropic",
+				nameEn: "Anthropic",
+				aliases: [],
+			},
 		]);
 		const [account] = database.listEnabledAccounts();
 		if (!account) throw new Error("Expected account");
 		const oldPost = database.upsertPost(
 			account.id,
-			normalizeTwitterApiTweet(rawTweet("old", "Wed Jul 01 09:00:00 +0000 2026")),
+			normalizeTwitterApiTweet(
+				rawTweet("old", "Wed Jul 01 09:00:00 +0000 2026"),
+			),
 		).post;
 		database.commitPostTopicAnalysis({
 			analysis: {

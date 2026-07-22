@@ -1,25 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { defineWorkflow } from "@flue/runtime";
 import * as v from "valibot";
-import agent from "../agents/news-topic-editor";
+import agent from "../agents/news-triage";
 import {
 	hydratePostArticles,
 	type ArticleHydrationStats,
 } from "../news/article-hydrator";
 import { NewsDatabase } from "../news/database";
-import {
-	normalizeTopicPostAnalyses,
-	normalizeTopicResolution,
-} from "../news/topic-classifier";
+import { normalizeTopicPostAnalyses } from "../news/topic-classifier";
 import { runTopicBacklog } from "../news/topic-pipeline";
-import {
-	topicClassificationPrompt,
-	topicResolutionPrompt,
-} from "../news/topic-prompts";
-import {
-	topicPostAnalysisBatchSchema,
-	topicResolutionSchema,
-} from "../news/schemas";
+import { topicClassificationPrompt } from "../news/topic-prompts";
+import { topicPostAnalysisBatchSchema } from "../news/schemas";
 import { TwitterApiClient } from "../news/twitter-api";
 
 const positiveInteger = (maximum: number) =>
@@ -46,6 +37,7 @@ const topicStatsSchema = v.object({
 	importantPosts: v.number(),
 	observedPosts: v.number(),
 	ignoredPosts: v.number(),
+	postsQueuedForResolution: v.number(),
 	topicsCreated: v.number(),
 	postsAttachedToTopics: v.number(),
 	errors: v.array(v.object({ scope: v.string(), message: v.string() })),
@@ -102,7 +94,6 @@ export default defineWorkflow({
 			}
 
 			let classificationSessionIndex = 0;
-			let resolutionSessionIndex = 0;
 			const topicStats = await runTopicBacklog({
 				database,
 				batchSize: input.topicBatchSize ?? 100,
@@ -116,22 +107,6 @@ export default defineWorkflow({
 						{ result: topicPostAnalysisBatchSchema },
 					);
 					return normalizeTopicPostAnalyses(posts, data.analyses);
-				},
-				resolver: async ({ candidate, organizationIds, activeTopics }) => {
-					if (activeTopics.length === 0) return null;
-					resolutionSessionIndex += 1;
-					const session = await harness.session(
-						`topic-resolution-${resolutionSessionIndex}`,
-					);
-					const { data } = await session.prompt(
-						topicResolutionPrompt({
-							candidate,
-							organizationIds,
-							activeTopics,
-						}),
-						{ result: topicResolutionSchema },
-					);
-					return normalizeTopicResolution(activeTopics, data);
 				},
 			});
 

@@ -12,6 +12,7 @@
     "news:pull": "flue run official-news-pull --target node --input '{\"maxPostsPerAccount\":5}'",
     "news:ingest": "tsx --env-file-if-exists=.env src/commands/news-ingest.ts",
     "news:triage": "flue run news-triage --target node --input '{}'",
+    "news:resolve": "flue run news-topic-resolve --target node --input '{}'",
     "news:metrics": "tsx --env-file-if-exists=.env src/commands/news-metrics.ts",
     "test": "vitest run tests/unit"
   },

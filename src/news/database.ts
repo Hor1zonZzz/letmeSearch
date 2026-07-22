@@ -950,6 +950,53 @@ LIMIT ?`)
 		}));
 	}
 
+	commitPostTopicClassification(input: {
+		analysis: PostTopicAnalysis;
+		analysisVersion: number;
+		resolutionVersion: number;
+		now: string;
+	}): void {
+		this.#database.exec('BEGIN IMMEDIATE');
+		try {
+			this.savePostTopicAnalysis(
+				input.analysis,
+				input.analysisVersion,
+				input.now,
+			);
+			if (input.analysis.decision === 'ignore') {
+				const previous = this.#database
+					.prepare(`
+SELECT topic_id FROM topic_posts WHERE post_id = ?`)
+					.get(input.analysis.postId) as Row | undefined;
+				this.#database
+					.prepare('DELETE FROM topic_posts WHERE post_id = ?')
+					.run(input.analysis.postId);
+				this.#database
+					.prepare('DELETE FROM post_topic_resolutions WHERE post_id = ?')
+					.run(input.analysis.postId);
+				if (previous) {
+					this.#database
+						.prepare(`
+UPDATE topics SET status = 'archived', updated_at = ?
+WHERE id = ? AND NOT EXISTS (
+	SELECT 1 FROM topic_posts WHERE topic_posts.topic_id = topics.id
+)`)
+						.run(input.now, rowString(previous, 'topic_id'));
+				}
+			} else {
+				this.queuePostTopicResolution(
+					input.analysis.postId,
+					input.resolutionVersion,
+					input.now,
+				);
+			}
+			this.#database.exec('COMMIT');
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec('ROLLBACK');
+			throw error;
+		}
+	}
+
 	queuePostTopicResolution(
 		postId: string,
 		resolutionVersion: number,
