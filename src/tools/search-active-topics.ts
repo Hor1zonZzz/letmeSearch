@@ -117,7 +117,7 @@ function decodeCursor(
 	subject: TopicSearchSubject,
 	input: TopicSearchInput,
 ): number {
-	if (!cursor) return 0;
+	if (!cursor || cursor === "null") return 0;
 	try {
 		const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
 			offset?: unknown;

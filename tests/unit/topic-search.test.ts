@@ -186,7 +186,7 @@ describe("active Topic search", () => {
 			strategy: "balanced" as const,
 			detail: "compact" as const,
 			limit: 1,
-			cursor: null,
+			cursor: "null",
 		};
 
 		const first = await session.tool.run({ input, signal: undefined });
