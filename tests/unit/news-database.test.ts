@@ -97,6 +97,70 @@ describe('official news database', () => {
 		]);
 	});
 
+	it('commits Topic resolutions with optimistic revisions', () => {
+		const db = database();
+		db.seedAccounts([{ handle: 'OpenAI', organization: 'OpenAI' }]);
+		db.seedOrganizations([
+			{ id: 'openai', nameZh: 'OpenAI', nameEn: 'OpenAI', aliases: [] },
+		]);
+		const account = onlyAccount(db);
+		const first = db.upsertPost(account.id, normalizedPost()).post;
+		const second = db.upsertPost(account.id, normalizedPost({
+			xPostId: '2078243667081617827',
+			tweetUrl: 'https://x.com/OpenAI/status/2078243667081617827',
+		})).post;
+		const saveAnalysis = (postId: string) => {
+			db.savePostTopicAnalysis({
+				postId,
+				decision: 'important',
+				isImportant: true,
+				domain: 'ai_technology',
+				organizationIds: ['openai'],
+				unknownOrganizationCandidates: [],
+				topicCandidate: {
+					titleZh: 'OpenAI 发布 GPT Example',
+					titleEn: 'OpenAI Releases GPT Example',
+					summaryZh: 'OpenAI 发布测试模型。',
+					summaryEn: 'OpenAI released a test model.',
+					type: 'model_release',
+				},
+				reason: 'Model release',
+				confidence: 0.9,
+			}, 1, '2026-07-22T10:01:00.000Z');
+			db.queuePostTopicResolution(postId, 1, '2026-07-22T10:01:00.000Z');
+		};
+		saveAnalysis(first.id);
+		saveAnalysis(second.id);
+		const created = db.commitTopicResolution({
+			postId: first.id,
+			decision: 'create',
+			targetTopicId: null,
+			expectedTopicRevision: null,
+			confidence: 0.95,
+			reason: 'No matching Topic',
+			searchTrace: { searches: [] },
+			modelRunId: 'run-1',
+			resolutionVersion: 1,
+			now: '2026-07-22T10:02:00.000Z',
+		});
+		db.commitTopicResolution({
+			postId: second.id,
+			decision: 'attach',
+			targetTopicId: created.topicId,
+			expectedTopicRevision: 0,
+			confidence: 0.94,
+			reason: 'Same release',
+			searchTrace: { searches: ['search-1'] },
+			modelRunId: 'run-2',
+			resolutionVersion: 1,
+			now: '2026-07-22T10:03:00.000Z',
+		});
+
+		expect(db.listActiveTopics('2026-07-19T00:00:00.000Z')).toEqual([
+			expect.objectContaining({ id: created.topicId, revision: 1 }),
+		]);
+	});
+
 	it('commits an event and immutable report version atomically', () => {
 		const db = database();
 		db.seedAccounts([{ handle: 'OpenAI', organization: 'OpenAI' }]);

@@ -1199,7 +1199,9 @@ INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, 
 			}
 			this.#database
 				.prepare(`
-UPDATE topics SET last_updated_at = ?, updated_at = ? WHERE id = ?`)
+UPDATE topics
+SET last_updated_at = ?, updated_at = ?, revision = revision + 1
+WHERE id = ?`)
 				.run(input.now, input.now, input.topicId);
 			this.#database.exec("COMMIT");
 		} catch (error) {
@@ -1247,7 +1249,9 @@ SELECT topic_id FROM topic_posts WHERE post_id = ?`)
 				if (input.existingTopicId) {
 					const updated = this.#database
 						.prepare(`
-UPDATE topics SET last_updated_at = ?, updated_at = ? WHERE id = ?`)
+UPDATE topics
+SET last_updated_at = ?, updated_at = ?, revision = revision + 1
+WHERE id = ?`)
 						.run(input.now, input.now, topicId);
 					if (updated.changes !== 1)
 						throw new Error(`Topic not found: ${topicId}`);
@@ -1307,6 +1311,203 @@ WHERE id = ? AND NOT EXISTS (
 			);
 			this.#database.exec("COMMIT");
 			return { topicId, topicCreated };
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	commitTopicResolution(input: {
+		postId: string;
+		decision: "attach" | "create";
+		targetTopicId: string | null;
+		expectedTopicRevision: number | null;
+		confidence: number;
+		reason: string;
+		searchTrace: unknown;
+		modelRunId: string | null;
+		resolutionVersion: number;
+		now: string;
+	}): { topicId: string; topicCreated: boolean } {
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			const row = this.#database.prepare(`
+SELECT analyses.decision, analyses.organization_ids_json,
+	analyses.topic_candidate_json, posts.published_at
+FROM post_topic_analyses analyses
+JOIN posts ON posts.id = analyses.post_id
+WHERE analyses.post_id = ? AND analyses.status = 'success'
+	AND analyses.decision IN ('important', 'observe')`)
+				.get(input.postId) as Row | undefined;
+			if (!row) throw new Error(`Tracked analysis not found: ${input.postId}`);
+			const candidate = parseJson<TopicCandidate | null>(
+				row.topic_candidate_json,
+				null,
+			);
+			if (!candidate) throw new Error("Tracked analysis has no Topic candidate");
+			const organizationIds = parseJson<string[]>(row.organization_ids_json, []);
+			const publishedAt = rowString(row, "published_at");
+			const previous = this.#database.prepare(`
+SELECT topic_id FROM topic_posts WHERE post_id = ?`).get(input.postId) as Row | undefined;
+			const previousTopicId = previous ? rowString(previous, "topic_id") : null;
+			let topicId: string;
+			let topicCreated = false;
+			if (input.decision === "attach") {
+				if (!input.targetTopicId || input.expectedTopicRevision === null) {
+					throw new Error("Attach resolution is missing Topic revision data");
+				}
+				topicId = input.targetTopicId;
+				const updated = this.#database.prepare(`
+UPDATE topics
+SET last_updated_at = ?, updated_at = ?, revision = revision + 1
+WHERE id = ? AND status = 'active' AND revision = ?`)
+					.run(input.now, input.now, topicId, input.expectedTopicRevision);
+				if (updated.changes !== 1) {
+					throw new Error(`Topic changed before resolution commit: ${topicId}`);
+				}
+			} else {
+				if (input.targetTopicId !== null || input.expectedTopicRevision !== null) {
+					throw new Error("Create resolution unexpectedly references an existing Topic");
+				}
+				topicId = randomUUID();
+				this.#database.prepare(`
+INSERT INTO topics(
+	id, title_zh, title_en, summary_zh, summary_en, topic_type,
+	status, first_seen_at, last_updated_at, created_at, updated_at, revision
+) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 0)`)
+					.run(
+						topicId,
+						candidate.titleZh,
+						candidate.titleEn,
+						candidate.summaryZh,
+						candidate.summaryEn,
+						candidate.type,
+						publishedAt,
+						publishedAt,
+						input.now,
+						input.now,
+					);
+				topicCreated = true;
+			}
+			for (const organizationId of new Set(organizationIds)) {
+				this.#database.prepare(`
+INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
+					.run(topicId, organizationId);
+			}
+			this.#database.prepare(`
+INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
+				.run(input.postId, topicId, rowString(row, "decision"), input.now);
+			if (previousTopicId && previousTopicId !== topicId) {
+				this.#database.prepare(`
+UPDATE topics SET status = 'archived', updated_at = ?
+WHERE id = ? AND NOT EXISTS (
+	SELECT 1 FROM topic_posts WHERE topic_posts.topic_id = topics.id
+)`).run(input.now, previousTopicId);
+			}
+			this.#database.prepare(`
+UPDATE post_topic_resolutions SET
+	status = 'resolved', decision = ?, target_topic_id = ?, confidence = ?,
+	reason = ?, error = NULL, next_retry_at = NULL,
+	resolution_version = ?, resolved_at = ?, updated_at = ?
+WHERE post_id = ?`).run(
+				input.decision,
+				topicId,
+				input.confidence,
+				input.reason,
+				input.resolutionVersion,
+				input.now,
+				input.now,
+				input.postId,
+			);
+			this.#database.prepare(`
+INSERT INTO topic_resolution_events(
+	id, post_id, decision, from_topic_id, to_topic_id, resolver_version,
+	confidence, reason, search_trace_json, model_run_id, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+				randomUUID(),
+				input.postId,
+				input.decision,
+				previousTopicId,
+				topicId,
+				input.resolutionVersion,
+				input.confidence,
+				input.reason.slice(0, 500),
+				JSON.stringify(input.searchTrace),
+				input.modelRunId,
+				input.now,
+			);
+			this.#database.exec("COMMIT");
+			return { topicId, topicCreated };
+		} catch (error) {
+			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	markTopicResolutionFailed(input: {
+		postId: string;
+		error: string;
+		nextRetryAt: string;
+		resolutionVersion: number;
+		now: string;
+	}): void {
+		this.#database.prepare(`
+UPDATE post_topic_resolutions SET
+	status = 'failed', decision = NULL, target_topic_id = NULL,
+	attempt_count = attempt_count + 1, next_retry_at = ?, error = ?,
+	resolution_version = ?, updated_at = ?
+WHERE post_id = ?`).run(
+			input.nextRetryAt,
+			input.error.slice(0, 500),
+			input.resolutionVersion,
+			input.now,
+			input.postId,
+		);
+	}
+
+	markTopicResolutionDeferred(input: {
+		postId: string;
+		confidence: number;
+		reason: string;
+		nextRetryAt: string | null;
+		searchTrace: unknown;
+		modelRunId: string | null;
+		resolutionVersion: number;
+		now: string;
+	}): void {
+		this.#database.exec("BEGIN IMMEDIATE");
+		try {
+			this.#database.prepare(`
+UPDATE post_topic_resolutions SET
+	status = 'deferred', decision = 'defer', target_topic_id = NULL,
+	confidence = ?, reason = ?, attempt_count = attempt_count + 1,
+	next_retry_at = ?, error = NULL, resolution_version = ?, updated_at = ?
+WHERE post_id = ?`).run(
+				input.confidence,
+				input.reason.slice(0, 500),
+				input.nextRetryAt,
+				input.resolutionVersion,
+				input.now,
+				input.postId,
+			);
+			this.#database.prepare(`
+INSERT INTO topic_resolution_events(
+	id, post_id, decision, resolver_version, confidence, reason,
+	search_trace_json, model_run_id, created_at
+) VALUES (?, ?, 'defer', ?, ?, ?, ?, ?, ?)`).run(
+				randomUUID(),
+				input.postId,
+				input.resolutionVersion,
+				input.confidence,
+				input.reason.slice(0, 500),
+				JSON.stringify(input.searchTrace),
+				input.modelRunId,
+				input.now,
+			);
+			this.#database.exec("COMMIT");
 		} catch (error) {
 			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
 			throw error;
