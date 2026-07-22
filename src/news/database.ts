@@ -962,8 +962,19 @@ SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
 	topic_organizations.organization_id
 FROM topics
 LEFT JOIN topic_organizations ON topic_organizations.topic_id = topics.id
-WHERE topics.status = 'active' AND topics.last_updated_at >= ?
-ORDER BY topics.last_updated_at DESC`)
+WHERE topics.status = 'active' AND EXISTS (
+	SELECT 1
+	FROM topic_posts recent_topic_posts
+	JOIN posts recent_posts ON recent_posts.id = recent_topic_posts.post_id
+	WHERE recent_topic_posts.topic_id = topics.id
+		AND recent_posts.published_at >= ?
+)
+ORDER BY (
+	SELECT max(latest_posts.published_at)
+	FROM topic_posts latest_topic_posts
+	JOIN posts latest_posts ON latest_posts.id = latest_topic_posts.post_id
+	WHERE latest_topic_posts.topic_id = topics.id
+) DESC`)
 			.all(since) as Row[];
 		const topics = new Map<string, NewsTopic>();
 		for (const row of rows) {

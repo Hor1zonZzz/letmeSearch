@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { TOPIC_ANALYSIS_VERSION } from "./config";
+import {
+	TOPIC_ANALYSIS_VERSION,
+	TOPIC_MATCH_WINDOW_HOURS,
+} from "./config";
 import type { NewsDatabase } from "./database";
 import { ORGANIZATIONS } from "./organizations";
 import { classifyTopicPosts, resolveTopicCandidate } from "./topic-classifier";
@@ -136,7 +139,7 @@ export async function runTopicPipeline(options: {
 				if (!candidate)
 					throw new Error("Tracked analysis has no topic candidate");
 				const since = new Date(
-					now().getTime() - 7 * 24 * 60 * 60 * 1_000,
+					now().getTime() - TOPIC_MATCH_WINDOW_HOURS * 60 * 60 * 1_000,
 				).toISOString();
 				const activeTopics = database.listActiveTopics(since);
 				if (activeTopics.length > 0) {

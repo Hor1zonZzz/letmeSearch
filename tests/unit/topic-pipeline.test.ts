@@ -120,6 +120,32 @@ describe("topic pipeline", () => {
 		expect(resolver).toHaveBeenCalledOnce();
 	});
 
+	it("excludes topics whose newest source post is older than 72 hours", () => {
+		const database = new NewsDatabase(":memory:");
+		databases.push(database);
+		database.seedAccounts([{ handle: "claudeai", organization: "Anthropic" }]);
+		database.seedOrganizations([
+			{ id: "anthropic", nameZh: "Anthropic", nameEn: "Anthropic", aliases: [] },
+		]);
+		const [account] = database.listEnabledAccounts();
+		if (!account) throw new Error("Expected account");
+		const oldPost = database.upsertPost(
+			account.id,
+			normalizeTwitterApiTweet(rawTweet("old", "Wed Jul 01 09:00:00 +0000 2026")),
+		).post;
+		database.commitPostTopicAnalysis({
+			analysis: {
+				...analysis(oldPost.id, "important"),
+				organizationIds: ["anthropic"],
+			},
+			analysisVersion: 1,
+			existingTopicId: null,
+			now: "2026-07-22T11:00:00.000Z",
+		});
+
+		expect(database.listActiveTopics("2026-07-19T11:00:00.000Z")).toEqual([]);
+	});
+
 	it("prevents overlapping topic backlog jobs", async () => {
 		const database = new NewsDatabase(":memory:");
 		databases.push(database);
