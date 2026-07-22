@@ -93,12 +93,12 @@ describe("post classifier", () => {
 		expect(body).toMatchObject({
 			model: "deepseek-v4-pro",
 			response_format: { type: "json_object" },
-			max_tokens: 8192,
 			messages: [
 				{ role: "system", content: "system" },
 				{ role: "user", content: "user" },
 			],
 		});
+		expect(body).not.toHaveProperty("max_tokens");
 	});
 
 	it("parses and validates a complete classification batch", async () => {

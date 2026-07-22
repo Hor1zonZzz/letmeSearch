@@ -12,7 +12,6 @@ import type { PostForTriage, PostTopicAnalysis } from "./types";
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-pro";
-const MAX_TOKENS = 8_192;
 
 export type TopicModelResponse = {
 	content: string | null;
@@ -49,7 +48,6 @@ export async function requestTopicJson(
 			{ role: "user", content: prompt },
 		],
 		response_format: { type: "json_object" },
-		max_tokens: MAX_TOKENS,
 	});
 	const choice = completion.choices[0];
 	if (!choice)

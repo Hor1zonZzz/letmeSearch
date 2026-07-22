@@ -6,7 +6,6 @@ import type { PostForAnalysis } from "./types";
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-pro";
-const CLASSIFICATION_MAX_TOKENS = 8_192;
 
 export const CLASSIFICATION_SYSTEM_PROMPT = `You are a rigorous Chinese breaking-news classifier covering announcements from monitored AI organizations and industry figures.
 
@@ -91,7 +90,6 @@ export async function requestDeepSeekClassification(
 			{ role: "user", content: request.userPrompt },
 		],
 		response_format: { type: "json_object" },
-		max_tokens: CLASSIFICATION_MAX_TOKENS,
 	});
 	const choice = completion.choices[0];
 	if (!choice) throw new Error("DeepSeek returned no classification choice");
