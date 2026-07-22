@@ -113,6 +113,24 @@ export type TopicResolutionStatus =
 	| "deferred"
 	| "failed";
 
+export type TopicResolutionShadowComparison = {
+	id: string;
+	postId: string;
+	resolverVersion: number;
+	toolDecision: "attach" | "create" | "defer";
+	toolTopicId: string | null;
+	toolConfidence: number;
+	toolReason: string;
+	legacyDecision: "attach" | "create" | "error";
+	legacyTopicId: string | null;
+	legacyError: string | null;
+	agreed: boolean;
+	searchTrace: unknown;
+	toolModelRunId: string | null;
+	legacyModelRunId: string | null;
+	createdAt: string;
+};
+
 export type PendingTopicResolution = {
 	postId: string;
 	xPostId: string;

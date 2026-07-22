@@ -131,6 +131,36 @@ describe('official news database', () => {
 		};
 		saveAnalysis(first.id);
 		saveAnalysis(second.id);
+		db.recordTopicResolutionShadowComparison({
+			postId: first.id,
+			resolverVersion: 1,
+			toolDecision: 'create',
+			toolTopicId: null,
+			toolConfidence: 0.9,
+			toolReason: 'No match',
+			legacyDecision: 'create',
+			legacyTopicId: null,
+			legacyError: null,
+			agreed: true,
+			searchTrace: { searches: [] },
+			toolModelRunId: 'tool-run',
+			legacyModelRunId: 'legacy-run',
+			now: '2026-07-22T10:01:30.000Z',
+		});
+		expect(db.listPendingTopicResolutions(
+			10,
+			1,
+			'2026-07-22T10:02:00.000Z',
+			true,
+		).map(({ postId }) => postId)).toEqual([second.id]);
+		expect(db.listTopicResolutionShadowComparisons(first.id)).toEqual([
+			expect.objectContaining({
+				postId: first.id,
+				toolDecision: 'create',
+				legacyDecision: 'create',
+				agreed: true,
+			}),
+		]);
 		const created = db.commitTopicResolution({
 			postId: first.id,
 			decision: 'create',
