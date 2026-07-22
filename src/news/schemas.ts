@@ -46,7 +46,7 @@ export const topicCandidateSchema = v.object({
 
 export const topicPostAnalysisSchema = v.object({
 	postRef: boundedText(1, 20),
-	decision: v.picklist(["important", "observe", "ignore"]),
+	decision: v.picklist(["important", "ignore"]),
 	domain: v.picklist([
 		"ai_technology",
 		"ai_policy",

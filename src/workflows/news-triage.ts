@@ -35,7 +35,6 @@ const topicStatsSchema = v.object({
 	postsAttempted: v.number(),
 	postsAnalyzed: v.number(),
 	importantPosts: v.number(),
-	observedPosts: v.number(),
 	ignoredPosts: v.number(),
 	postsQueuedForResolution: v.number(),
 	topicsCreated: v.number(),

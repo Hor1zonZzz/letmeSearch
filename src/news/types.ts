@@ -56,7 +56,7 @@ export type PostForAnalysis = StoredPost & {
 	accountOrganization: string;
 };
 
-export type TriageDecision = "important" | "observe" | "ignore";
+export type TriageDecision = "important" | "ignore";
 export type TriageDomain =
 	| "ai_technology"
 	| "ai_policy"

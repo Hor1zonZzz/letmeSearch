@@ -455,6 +455,75 @@ CREATE INDEX topic_resolution_shadow_post_idx
 DROP TABLE IF EXISTS topic_resolution_shadow_comparisons;
 `,
 	},
+	{
+		version: 8,
+		name: "remove-observe-topic-decision",
+		sql: `
+CREATE TABLE post_topic_analyses_v8 (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+	decision TEXT CHECK (decision IS NULL OR decision IN ('important', 'ignore')),
+	is_important INTEGER CHECK (is_important IS NULL OR is_important IN (0, 1)),
+	domain TEXT CHECK (domain IS NULL OR domain IN ('ai_technology', 'ai_policy', 'politics', 'finance', 'general_technology', 'other')),
+	organization_ids_json TEXT CHECK (organization_ids_json IS NULL OR (json_valid(organization_ids_json) AND json_type(organization_ids_json) = 'array')),
+	unknown_organizations_json TEXT CHECK (unknown_organizations_json IS NULL OR (json_valid(unknown_organizations_json) AND json_type(unknown_organizations_json) = 'array')),
+	topic_candidate_json TEXT CHECK (topic_candidate_json IS NULL OR json_valid(topic_candidate_json)),
+	reason TEXT,
+	confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+	error TEXT,
+	analysis_version INTEGER NOT NULL,
+	analyzed_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK (
+		status = 'failed' OR (
+			decision IS NOT NULL AND is_important IS NOT NULL AND domain IS NOT NULL
+			AND organization_ids_json IS NOT NULL AND unknown_organizations_json IS NOT NULL
+			AND reason IS NOT NULL AND confidence IS NOT NULL
+			AND is_important = CASE WHEN decision = 'important' THEN 1 ELSE 0 END
+			AND ((decision = 'ignore' AND topic_candidate_json IS NULL)
+				OR (decision = 'important' AND topic_candidate_json IS NOT NULL))
+		)
+	)
+);
+
+INSERT INTO post_topic_analyses_v8(
+	post_id, status, decision, is_important, domain, organization_ids_json,
+	unknown_organizations_json, topic_candidate_json, reason, confidence,
+	error, analysis_version, analyzed_at, updated_at
+)
+SELECT post_id, status,
+	CASE WHEN decision = 'observe' THEN 'important' ELSE decision END,
+	CASE
+		WHEN status = 'success' AND decision IN ('important', 'observe') THEN 1
+		WHEN status = 'success' THEN 0
+		ELSE is_important
+	END,
+	domain, organization_ids_json, unknown_organizations_json,
+	topic_candidate_json, reason, confidence, error,
+	CASE WHEN status = 'success' THEN 2 ELSE analysis_version END,
+	analyzed_at, updated_at
+FROM post_topic_analyses;
+
+DROP TABLE post_topic_analyses;
+ALTER TABLE post_topic_analyses_v8 RENAME TO post_topic_analyses;
+CREATE INDEX topic_analyses_status_idx
+	ON post_topic_analyses(status, analyzed_at);
+
+CREATE TABLE topic_posts_v8 (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+	decision TEXT NOT NULL CHECK (decision = 'important'),
+	added_at TEXT NOT NULL
+);
+INSERT INTO topic_posts_v8(post_id, topic_id, decision, added_at)
+SELECT post_id, topic_id, 'important', added_at FROM topic_posts;
+DROP TABLE topic_posts;
+ALTER TABLE topic_posts_v8 RENAME TO topic_posts;
+CREATE INDEX topic_posts_topic_idx ON topic_posts(topic_id, added_at);
+
+DROP TABLE IF EXISTS post_metric_promotions;
+`,
+	},
 ];
 
 function rowString(row: Row, key: string): string {
@@ -1062,7 +1131,7 @@ FROM post_topic_resolutions resolutions
 JOIN post_topic_analyses analyses ON analyses.post_id = resolutions.post_id
 JOIN posts ON posts.id = resolutions.post_id
 WHERE analyses.status = 'success'
-	AND analyses.decision IN ('important', 'observe')
+	AND analyses.decision = 'important'
 	AND analyses.topic_candidate_json IS NOT NULL
 	AND (
 		resolutions.resolution_version < ?
@@ -1484,7 +1553,7 @@ SELECT analyses.decision, analyses.organization_ids_json,
 FROM post_topic_analyses analyses
 JOIN posts ON posts.id = analyses.post_id
 WHERE analyses.post_id = ? AND analyses.status = 'success'
-	AND analyses.decision IN ('important', 'observe')`)
+	AND analyses.decision = 'important'`)
 				.get(input.postId) as Row | undefined;
 			if (!row) throw new Error(`Tracked analysis not found: ${input.postId}`);
 			const candidate = parseJson<TopicCandidate | null>(
@@ -1706,81 +1775,6 @@ ON CONFLICT(post_id, observed_at) DO UPDATE SET
 				);
 			}
 			this.#database.exec("COMMIT");
-		} catch (error) {
-			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
-			throw error;
-		}
-	}
-
-	promoteEligibleObservedPosts(now: string): string[] {
-		const rows = this.#database
-			.prepare(`
-SELECT topic_posts.post_id, posts.published_at,
-	(SELECT view_count FROM post_metric_snapshots first_snapshot
-		WHERE first_snapshot.post_id = topic_posts.post_id
-		ORDER BY observed_at ASC LIMIT 1) AS baseline_views,
-	(SELECT view_count FROM post_metric_snapshots latest_snapshot
-		WHERE latest_snapshot.post_id = topic_posts.post_id
-		ORDER BY observed_at DESC LIMIT 1) AS current_views
-FROM topic_posts
-JOIN posts ON posts.id = topic_posts.post_id
-WHERE topic_posts.decision = 'observe'`)
-			.all() as Row[];
-		const nowMs = new Date(now).getTime();
-		const eligible = rows.flatMap((row) => {
-			const baselineViews = row.baseline_views;
-			const currentViews = row.current_views;
-			if (typeof baselineViews !== "number" || typeof currentViews !== "number")
-				return [];
-			const ageHours =
-				(nowMs - new Date(rowString(row, "published_at")).getTime()) /
-				3_600_000;
-			if (ageHours < 5) return [];
-			const reason =
-				currentViews >= 250_000
-					? "views_250k"
-					: currentViews - baselineViews >= 100_000
-						? "views_gained_100k"
-						: null;
-			return reason
-				? [
-						{
-							postId: rowString(row, "post_id"),
-							baselineViews,
-							currentViews,
-							reason,
-						},
-					]
-				: [];
-		});
-		if (eligible.length === 0) return [];
-		const updateTopicPost = this.#database.prepare(`
-UPDATE topic_posts SET decision = 'important' WHERE post_id = ? AND decision = 'observe'`);
-		const updateAnalysis = this.#database.prepare(`
-UPDATE post_topic_analyses
-SET decision = 'important', is_important = 1, updated_at = ?
-WHERE post_id = ? AND status = 'success'`);
-		const insertPromotion = this.#database.prepare(`
-INSERT OR IGNORE INTO post_metric_promotions(
-	post_id, promoted_at, baseline_views, promotion_views, reason
-) VALUES (?, ?, ?, ?, ?)`);
-		this.#database.exec("BEGIN IMMEDIATE");
-		try {
-			const promoted: string[] = [];
-			for (const item of eligible) {
-				if (updateTopicPost.run(item.postId).changes !== 1) continue;
-				updateAnalysis.run(now, item.postId);
-				insertPromotion.run(
-					item.postId,
-					now,
-					item.baselineViews,
-					item.currentViews,
-					item.reason,
-				);
-				promoted.push(item.postId);
-			}
-			this.#database.exec("COMMIT");
-			return promoted;
 		} catch (error) {
 			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
 			throw error;

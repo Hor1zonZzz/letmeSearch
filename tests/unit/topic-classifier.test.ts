@@ -83,4 +83,19 @@ describe("topic classifier", () => {
 		}))).rejects.toThrow("Ignored post");
 	});
 
+	it("rejects the retired observe decision", async () => {
+		await expect(classifyTopicPosts([post()], async () => modelResponse({
+			analyses: [{
+				postRef: "p1",
+				decision: "observe",
+				domain: "ai_technology",
+				organizationIds: [],
+				unknownOrganizationCandidates: [],
+				topicCandidate: candidate,
+				reason: "Observe",
+				confidence: 0.8,
+			}],
+		}))).rejects.toThrow();
+	});
+
 });

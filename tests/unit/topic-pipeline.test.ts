@@ -29,14 +29,11 @@ function rawTweet(id: string, createdAt: string): Record<string, unknown> {
 	};
 }
 
-function analysis(
-	postId: string,
-	decision: "important" | "observe",
-): PostTopicAnalysis {
+function analysis(postId: string): PostTopicAnalysis {
 	return {
 		postId,
-		decision,
-		isImportant: decision === "important",
+		decision: "important",
+		isImportant: true,
 		domain: "ai_technology",
 		organizationIds: ["anthropic"],
 		unknownOrganizationCandidates: [],
@@ -59,7 +56,7 @@ describe("topic pipeline", () => {
 		for (const database of databases.splice(0)) database.close();
 	});
 
-	it("queues important and observed posts without resolving Topics", async () => {
+	it("queues important posts without resolving Topics", async () => {
 		const database = new NewsDatabase(":memory:");
 		databases.push(database);
 		database.seedAccounts([{ handle: "claudeai", organization: "Anthropic" }]);
@@ -90,8 +87,8 @@ describe("topic pipeline", () => {
 			});
 		}
 		const classifier = vi.fn(async (_posts: PostForTriage[]) => [
-			analysis(first.id, "important"),
-			analysis(second.id, "observe"),
+			analysis(first.id),
+			analysis(second.id),
 		]);
 		const stats = await runTopicPipeline({
 			database,
@@ -102,8 +99,7 @@ describe("topic pipeline", () => {
 		expect(stats).toMatchObject({
 			postsAttempted: 2,
 			postsAnalyzed: 2,
-			importantPosts: 1,
-			observedPosts: 1,
+			importantPosts: 2,
 			postsQueuedForResolution: 2,
 			topicsCreated: 0,
 			postsAttachedToTopics: 0,
@@ -145,7 +141,7 @@ describe("topic pipeline", () => {
 		).post;
 		database.commitPostTopicAnalysis({
 			analysis: {
-				...analysis(oldPost.id, "important"),
+				...analysis(oldPost.id),
 				organizationIds: ["anthropic"],
 			},
 			analysisVersion: 1,

@@ -13,7 +13,6 @@ export type TopicPipelineStats = {
 	postsAttempted: number;
 	postsAnalyzed: number;
 	importantPosts: number;
-	observedPosts: number;
 	ignoredPosts: number;
 	postsQueuedForResolution: number;
 	topicsCreated: number;
@@ -98,7 +97,6 @@ export async function runTopicPipeline(options: {
 		postsAttempted: posts.length,
 		postsAnalyzed: 0,
 		importantPosts: 0,
-		observedPosts: 0,
 		ignoredPosts: 0,
 		postsQueuedForResolution: 0,
 		topicsCreated: 0,
@@ -131,8 +129,7 @@ export async function runTopicPipeline(options: {
 				continue;
 			}
 			stats.postsQueuedForResolution += 1;
-			if (analysis.decision === "important") stats.importantPosts += 1;
-			else stats.observedPosts += 1;
+			stats.importantPosts += 1;
 		} catch (error) {
 			const message = errorMessage(error);
 			database.markPostTopicAnalysisFailed(
@@ -167,7 +164,6 @@ export async function runTopicBacklog(options: {
 		postsAttempted: 0,
 		postsAnalyzed: 0,
 		importantPosts: 0,
-		observedPosts: 0,
 		ignoredPosts: 0,
 		postsQueuedForResolution: 0,
 		topicsCreated: 0,
@@ -185,7 +181,6 @@ export async function runTopicBacklog(options: {
 			total.postsAttempted += batch.postsAttempted;
 			total.postsAnalyzed += batch.postsAnalyzed;
 			total.importantPosts += batch.importantPosts;
-			total.observedPosts += batch.observedPosts;
 			total.ignoredPosts += batch.ignoredPosts;
 			total.postsQueuedForResolution += batch.postsQueuedForResolution;
 			total.topicsCreated += batch.topicsCreated;

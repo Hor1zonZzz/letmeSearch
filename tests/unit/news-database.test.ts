@@ -69,8 +69,8 @@ describe('official news database', () => {
 		const now = '2026-07-22T10:01:00.000Z';
 		db.savePostTopicAnalysis({
 			postId: post.id,
-			decision: 'observe',
-			isImportant: false,
+			decision: 'important',
+			isImportant: true,
 			domain: 'ai_technology',
 			organizationIds: ['openai'],
 			unknownOrganizationCandidates: [],
@@ -81,7 +81,7 @@ describe('official news database', () => {
 				summaryEn: 'OpenAI released a test model.',
 				type: 'model_release',
 			},
-			reason: 'Potential release',
+			reason: 'Important release',
 			confidence: 0.8,
 		}, 1, now);
 		db.queuePostTopicResolution(post.id, 1, now);

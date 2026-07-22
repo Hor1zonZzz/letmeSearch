@@ -27,8 +27,8 @@ function rawTweet(id: string, createdAt: string): Record<string, unknown> {
 function analysis(postId: string): PostTopicAnalysis {
 	return {
 		postId,
-		decision: "observe",
-		isImportant: false,
+		decision: "important",
+		isImportant: true,
 		domain: "ai_technology",
 		organizationIds: ["openai"],
 		unknownOrganizationCandidates: [],
@@ -39,7 +39,7 @@ function analysis(postId: string): PostTopicAnalysis {
 			summaryEn: "A model release used for metric tests.",
 			type: "model_release",
 		},
-		reason: "Potentially important release",
+		reason: "Important release",
 		confidence: 0.8,
 	};
 }
@@ -50,7 +50,7 @@ describe("metrics refresh", () => {
 		for (const database of databases.splice(0)) database.close();
 	});
 
-	it("promotes observed posts and ranks a topic after effective views pass one million", async () => {
+	it("ranks an important Topic after effective views pass one million", async () => {
 		const database = new NewsDatabase(":memory:");
 		databases.push(database);
 		database.seedAccounts([{ handle: "OpenAI", organization: "OpenAI" }]);
@@ -149,7 +149,6 @@ describe("metrics refresh", () => {
 
 		expect(initial).toMatchObject({
 			snapshotsSaved: 2,
-			promotedPosts: 1,
 			topics: [
 				{
 					topicId: created.topicId,
@@ -161,7 +160,6 @@ describe("metrics refresh", () => {
 		});
 		expect(ranked).toMatchObject({
 			snapshotsSaved: 2,
-			promotedPosts: 1,
 			topics: [
 				{
 					topicId: created.topicId,

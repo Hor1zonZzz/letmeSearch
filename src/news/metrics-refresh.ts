@@ -27,7 +27,6 @@ export type TopicMetricsResult = {
 export type MetricsRefreshStats = {
 	postsAttempted: number;
 	snapshotsSaved: number;
-	promotedPosts: number;
 	topicsCalculated: number;
 	stoppedTopics: number;
 	hotTopics: CurrentHotTopic[];
@@ -172,7 +171,6 @@ export async function runMetricsRefresh(options: {
 			}
 		}
 		options.database.savePostMetricSnapshots(snapshots, observedAt);
-		const promoted = options.database.promoteEligibleObservedPosts(observedAt);
 		const postsByTopic = Map.groupBy(
 			options.database.listTopicMetricPosts(),
 			(post) => post.topicId,
@@ -267,7 +265,6 @@ export async function runMetricsRefresh(options: {
 		return {
 			postsAttempted: posts.length,
 			snapshotsSaved: snapshots.length,
-			promotedPosts: promoted.length,
 			topicsCalculated: results.length,
 			stoppedTopics: results.filter(({ state }) => state === "stopped").length,
 			hotTopics: options.database.listCurrentHotTopics(),

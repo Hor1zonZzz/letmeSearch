@@ -44,12 +44,11 @@ export function topicClassificationPrompt(posts: PostForTriage[]): string {
 Return exactly this JSON shape, with one object per postRef:
 {"analyses":[{"postRef":"p1","decision":"important","domain":"ai_technology","organizationIds":["anthropic"],"unknownOrganizationCandidates":[],"topicCandidate":{"titleZh":"...","titleEn":"...","summaryZh":"...","summaryEn":"...","type":"product_update"},"reason":"...","confidence":0.9}]}
 
-Copy each short postRef exactly as supplied. Return every postRef exactly once; never return xPostId or invent an identifier. Do not add or omit fields. topicCandidate.type must be one of model_release, product_release, product_update, open_source, research, partnership, funding, acquisition, ai_policy, correction, shutdown, or other. decision must be important, observe, or ignore:
-- important: a concrete AI event such as a model/product release, material update, open-source release, research result, partnership, financing, acquisition, AI policy with direct industry impact, correction, or shutdown.
-- observe: AI or technology content that may become noteworthy but is not yet a clearly important event.
+Copy each short postRef exactly as supplied. Return every postRef exactly once; never return xPostId or invent an identifier. Do not add or omit fields. topicCandidate.type must be one of model_release, product_release, product_update, open_source, research, partnership, funding, acquisition, ai_policy, correction, shutdown, or other. decision must be important or ignore:
+- important: AI or technology content worth tracking, including concrete model/product releases, material updates, open-source releases, research results, partnerships, financing, acquisitions, AI policy, corrections, shutdowns, and noteworthy technical developments or expert analysis.
 - ignore: unrelated content, routine social chatter, lifestyle content, pure politics without direct AI-industry impact, or content with no useful AI/technology relevance.
 
-For important and observe, topicCandidate must be non-null and describe the real-world story that other posts could join. For ignore, topicCandidate must be null. Topic title and summary must be provided in both Chinese and English. Judge each post independently and use only its tweet, quoted content, reply metadata, and article body as evidence.
+For important, topicCandidate must be non-null and describe the real-world story that other posts could join. For ignore, topicCandidate must be null. Topic title and summary must be provided in both Chinese and English. Judge each post independently and use only its tweet, quoted content, reply metadata, and article body as evidence.
 
 organizationIds may contain only IDs from the supplied registry and may contain multiple organizations. Put mentioned or clearly involved unregistered organizations in unknownOrganizationCandidates; never invent a registry ID. People are publishers, not organizations. domain must be one of ai_technology, ai_policy, politics, finance, general_technology, or other. confidence is between 0 and 1.
 

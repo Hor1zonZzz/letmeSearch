@@ -112,10 +112,10 @@ npm run news:triage
 Workflow 只在 TwitterAPI.io 的 Tweet 数据包含非空 `article` 字段时调用 X Article
 接口并保存完整正文；普通外部链接的 `card` 不会触发 Article 请求。
 随后为每个账号批次创建独立 Agent session，通过 Valibot 结构化结果将所有 Original、
-Quote、Reply 和 Repost 分为 `important`、`observe` 或 `ignore`。Agent 使用 DeepSeek
+Quote、Reply 和 Repost 分为 `important` 或 `ignore`。Agent 使用 DeepSeek
 V4 Pro，分析结果只能引用预定义组织 ID，未知组织只作为候选名称保存。
 
-`important` 和 `observe` 都会生成中英双语 Topic 候选，并进入独立 Resolution 队列；
+`important` 会生成中英双语 Topic 候选并进入独立 Resolution 队列；
 `news:triage` 不再同步合并 Topic。Article 补全和分类积压均按 Post 发布时间从新到旧处理，
 避免历史积压阻塞最新新闻。
 
@@ -166,8 +166,6 @@ npm run news:metrics
 
 主要规则：
 
-- `observe` Post 发布满 5 小时后，达到 25 万浏览或相比首次快照新增 10 万浏览，
-  自动晋级为 `important`；
 - Topic 有效浏览量 = 最高单帖浏览量 + 其他 Post 浏览量总和 × 30%；
 - 有效浏览量达到 100 万后进入热榜；
 - 热度 = 对数浏览量百分位 × 50% + 对数增长速度百分位 × 50%；
