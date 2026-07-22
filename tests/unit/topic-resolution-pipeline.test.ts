@@ -120,4 +120,73 @@ describe("Topic resolution pipeline", () => {
 			expect.objectContaining({ revision: 1 }),
 		]);
 	});
+
+	it("records shadow agreement without writing Topic membership", async () => {
+		const database = new NewsDatabase(":memory:");
+		databases.push(database);
+		database.seedAccounts([{ handle: "claudeai", organization: "Anthropic" }]);
+		database.seedOrganizations([
+			{ id: "anthropic", nameZh: "Anthropic", nameEn: "Anthropic", aliases: [] },
+		]);
+		const [account] = database.listEnabledAccounts();
+		if (!account) throw new Error("Expected account");
+		const post = database.upsertPost(
+			account.id,
+			normalizeTwitterApiTweet(rawTweet("shadow", "10")),
+		).post;
+		database.commitPostTopicClassification({
+			analysis: analysis(post.id),
+			analysisVersion: 1,
+			resolutionVersion: 1,
+			now: "2026-07-22T11:00:00.000Z",
+		});
+
+		const stats = await runTopicResolutionBatch({
+			database,
+			mode: "shadow",
+			now: () => new Date("2026-07-22T12:00:00.000Z"),
+			requester: async ({ search }) => {
+				const result = await search.tool.run({
+					input: {
+						focus: null,
+						strategy: "balanced",
+						detail: "compact",
+						limit: 8,
+						cursor: null,
+					},
+					signal: undefined,
+				});
+				return {
+					result: {
+						decision: "create",
+						successfulSearchIds: [result.searchId],
+						confidence: 0.95,
+						reason: "No existing event",
+					},
+					modelRunId: "tool-run",
+				};
+			},
+			legacyRequester: async ({ activeTopics }) => {
+				expect(activeTopics).toEqual([]);
+				return { topicId: null, modelRunId: "legacy-run" };
+			},
+		});
+
+		expect(stats).toMatchObject({
+			postsAttempted: 1,
+			postsResolved: 0,
+			shadowComparisons: 1,
+			shadowAgreements: 1,
+		});
+		expect(database.listActiveTopics("2026-07-19T00:00:00.000Z")).toEqual([]);
+		expect(database.listTopicResolutionShadowComparisons(post.id)).toEqual([
+			expect.objectContaining({ agreed: true, toolDecision: "create" }),
+		]);
+		expect(database.listPendingTopicResolutions(
+			10,
+			1,
+			"2026-07-22T12:00:00.000Z",
+			true,
+		)).toEqual([]);
+	});
 });
