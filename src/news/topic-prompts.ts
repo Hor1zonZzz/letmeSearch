@@ -44,11 +44,17 @@ export function topicClassificationPrompt(posts: PostForTriage[]): string {
 Return exactly this JSON shape, with one object per postRef:
 {"analyses":[{"postRef":"p1","decision":"important","domain":"ai_technology","organizationIds":["anthropic"],"unknownOrganizationCandidates":[],"topicCandidate":{"titleZh":"...","titleEn":"...","summaryZh":"...","summaryEn":"...","type":"product_update"},"reason":"...","confidence":0.9}]}
 
-Copy each short postRef exactly as supplied. Return every postRef exactly once; never return xPostId or invent an identifier. Do not add or omit fields. topicCandidate.type must be one of model_release, product_release, product_update, open_source, research, partnership, funding, acquisition, ai_policy, correction, shutdown, or other. decision must be important or ignore:
-- important: AI or technology content worth tracking, including concrete model/product releases, material updates, open-source releases, research results, partnerships, financing, acquisitions, AI policy, corrections, shutdowns, and noteworthy technical developments or expert analysis.
-- ignore: unrelated content, routine social chatter, lifestyle content, pure politics without direct AI-industry impact, or content with no useful AI/technology relevance.
+Copy each short postRef exactly as supplied. Return every postRef exactly once; never return xPostId or invent an identifier. Do not add or omit fields. topicCandidate.type must be one of model_release, product_release, product_update, open_source, research, partnership, funding, acquisition, ai_policy, correction, shutdown, or other. decision must be important or ignore.
 
-For important, topicCandidate must be non-null and describe the real-world story that other posts could join. For ignore, topicCandidate must be null. Topic title and summary must be provided in both Chinese and English. Judge each post independently and use only its tweet, quoted content, reply metadata, and article body as evidence.
+Judge importance by durable information value, not only by whether the post announces a concrete news event. A concrete announcement is not required. Use important for:
+- model/product releases, material updates, open-source releases, research results, partnerships, financing, acquisitions, AI policy, corrections, and shutdowns;
+- substantive first-hand technical observations about AI model behavior, capabilities, limitations, evaluation, training, inference, or human-AI interaction;
+- detailed AI workflows, methods, or practical techniques that professionals could reuse;
+- specific expert analysis, assessments, or predictions that add a meaningful claim, mechanism, or industry insight.
+
+A reply or personal-experience post can be important when it contains standalone technical substance. Do not classify substantive AI content as ignore merely because it is commentary, a workflow tip, or not a concrete event. The publisher's reputation alone is not enough: brief praise, congratulations without details, jokes, vague reactions, fragmented questions, routine social chatter, lifestyle content, pure politics without direct AI-industry impact, and content with no useful AI/technology information are ignore.
+
+For important, topicCandidate must be non-null and describe the real-world story, technical insight, method, or expert thesis that other posts could join. For an analysis or workflow post, state its central insight instead of inventing an announcement; use type other when no more specific type applies. For ignore, topicCandidate must be null. Topic title and summary must be provided in both Chinese and English. Judge each post independently and use only its tweet, quoted content, reply metadata, and article body as evidence.
 
 organizationIds may contain only IDs from the supplied registry and may contain multiple organizations. Put mentioned or clearly involved unregistered organizations in unknownOrganizationCandidates; never invent a registry ID. People are publishers, not organizations. domain must be one of ai_technology, ai_policy, politics, finance, general_technology, or other. confidence is between 0 and 1.
 

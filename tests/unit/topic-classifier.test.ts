@@ -43,6 +43,9 @@ describe("topic classifier", () => {
 			expect(prompt).toContain("Complete article body");
 			expect(prompt).toContain('"postRef":"p1"');
 			expect(prompt).not.toContain("7b559db5-500b-4bef-a55a-ae80fe8f58cd");
+			expect(prompt).toContain("A concrete announcement is not required");
+			expect(prompt).toContain("substantive first-hand technical observations");
+			expect(prompt).toContain("detailed AI workflows");
 			return modelResponse({
 				analyses: [{
 					postRef: "p1",
