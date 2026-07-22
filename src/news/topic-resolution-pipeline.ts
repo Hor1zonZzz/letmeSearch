@@ -8,7 +8,7 @@ import {
 } from "./topic-resolution";
 import type { StructuredToolTopicResolution } from "./schemas";
 import { createSearchActiveTopics, type TopicSearchToolSession } from "../tools/search-active-topics";
-import type { NewsTopic, PendingTopicResolution } from "./types";
+import type { PendingTopicResolution } from "./types";
 
 export type TopicResolutionRequester = (options: {
 	pending: PendingTopicResolution;
@@ -18,16 +18,6 @@ export type TopicResolutionRequester = (options: {
 	modelRunId: string | null;
 }>;
 
-export type LegacyTopicResolutionRequester = (options: {
-	pending: PendingTopicResolution;
-	activeTopics: NewsTopic[];
-}) => Promise<{
-	topicId: string | null;
-	modelRunId: string | null;
-}>;
-
-export type TopicResolutionMode = "shadow" | "write";
-
 export type TopicResolutionStats = {
 	postsAttempted: number;
 	postsResolved: number;
@@ -35,8 +25,6 @@ export type TopicResolutionStats = {
 	postsAttachedToTopics: number;
 	postsDeferred: number;
 	postsFailed: number;
-	shadowComparisons: number;
-	shadowAgreements: number;
 	errors: Array<{ scope: string; message: string }>;
 };
 
@@ -55,18 +43,6 @@ function nextRetryAt(
 
 function traceJson(search: TopicSearchToolSession): Record<string, unknown> {
 	return { searches: search.trace };
-}
-
-function listLegacyCandidates(
-	database: NewsDatabase,
-	pending: PendingTopicResolution,
-): NewsTopic[] {
-	const anchor = new Date(pending.publishedAt).getTime();
-	const radius = 72 * 60 * 60 * 1_000;
-	return database.listTopicsForSearch(
-		new Date(anchor - radius).toISOString(),
-		new Date(anchor + radius).toISOString(),
-	).map(({ sourcePosts: _, ...topic }) => topic);
 }
 
 async function resolveOne(options: {
@@ -94,22 +70,15 @@ async function resolveOne(options: {
 export async function runTopicResolutionBatch(options: {
 	database: NewsDatabase;
 	requester: TopicResolutionRequester;
-	legacyRequester?: LegacyTopicResolutionRequester;
-	mode?: TopicResolutionMode;
 	limit?: number;
 	now?: () => Date;
 }): Promise<TopicResolutionStats> {
 	const now = options.now ?? (() => new Date());
 	const attemptedAt = now();
-	const mode = options.mode ?? "write";
-	if (mode === "shadow" && !options.legacyRequester) {
-		throw new Error("Shadow Topic resolution requires a legacy requester");
-	}
 	const pending = options.database.listPendingTopicResolutions(
 		options.limit ?? 100,
 		TOPIC_RESOLUTION_VERSION,
 		attemptedAt.toISOString(),
-		mode === "shadow",
 	);
 	const stats: TopicResolutionStats = {
 		postsAttempted: pending.length,
@@ -118,8 +87,6 @@ export async function runTopicResolutionBatch(options: {
 		postsAttachedToTopics: 0,
 		postsDeferred: 0,
 		postsFailed: 0,
-		shadowComparisons: 0,
-		shadowAgreements: 0,
 		errors: [],
 	};
 	for (const item of pending) {
@@ -130,49 +97,6 @@ export async function runTopicResolutionBatch(options: {
 				requester: options.requester,
 			});
 			const resolvedAt = now().toISOString();
-			if (mode === "shadow") {
-				let legacyTopicId: string | null = null;
-				let legacyModelRunId: string | null = null;
-				let legacyError: string | null = null;
-				try {
-					const legacy = await options.legacyRequester!({
-						pending: item,
-						activeTopics: listLegacyCandidates(options.database, item),
-					});
-					legacyTopicId = legacy.topicId;
-					legacyModelRunId = legacy.modelRunId;
-				} catch (error) {
-					legacyError = errorMessage(error);
-				}
-				const legacyDecision = legacyError
-					? "error" as const
-					: legacyTopicId
-						? "attach" as const
-						: "create" as const;
-				const agreed = legacyDecision !== "error" && (
-					(resolution.decision === "create" && legacyDecision === "create") ||
-					(resolution.decision === "attach" && legacyTopicId === resolution.topicId)
-				);
-				options.database.recordTopicResolutionShadowComparison({
-					postId: item.postId,
-					resolverVersion: TOPIC_RESOLUTION_VERSION,
-					toolDecision: resolution.decision,
-					toolTopicId: resolution.decision === "attach" ? resolution.topicId : null,
-					toolConfidence: resolution.confidence,
-					toolReason: resolution.reason,
-					legacyDecision,
-					legacyTopicId,
-					legacyError,
-					agreed,
-					searchTrace: traceJson(search),
-					toolModelRunId: modelRunId,
-					legacyModelRunId,
-					now: resolvedAt,
-				});
-				stats.shadowComparisons += 1;
-				if (agreed) stats.shadowAgreements += 1;
-				continue;
-			}
 			if (resolution.decision === "defer") {
 				options.database.markTopicResolutionDeferred({
 					postId: item.postId,
@@ -241,8 +165,6 @@ export async function runTopicResolutionBatch(options: {
 export async function runTopicResolutionBacklog(options: {
 	database: NewsDatabase;
 	requester: TopicResolutionRequester;
-	legacyRequester?: LegacyTopicResolutionRequester;
-	mode?: TopicResolutionMode;
 	batchSize?: number;
 	now?: () => Date;
 }): Promise<TopicResolutionStats> {
@@ -263,8 +185,6 @@ export async function runTopicResolutionBacklog(options: {
 		postsAttachedToTopics: 0,
 		postsDeferred: 0,
 		postsFailed: 0,
-		shadowComparisons: 0,
-		shadowAgreements: 0,
 		errors: [],
 	};
 	try {
@@ -272,8 +192,6 @@ export async function runTopicResolutionBacklog(options: {
 			const batch = await runTopicResolutionBatch({
 				database: options.database,
 				requester: options.requester,
-				legacyRequester: options.legacyRequester,
-				mode: options.mode,
 				limit: options.batchSize ?? 100,
 				now,
 			});
@@ -284,8 +202,6 @@ export async function runTopicResolutionBacklog(options: {
 				"postsAttachedToTopics",
 				"postsDeferred",
 				"postsFailed",
-				"shadowComparisons",
-				"shadowAgreements",
 			] as const) total[key] += batch[key];
 			total.errors.push(...batch.errors);
 			if (batch.postsAttempted < (options.batchSize ?? 100)) break;

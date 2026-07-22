@@ -72,12 +72,6 @@ export const topicPostAnalysisBatchSchema = v.object({
 	analyses: v.pipe(v.array(topicPostAnalysisSchema), v.maxLength(100)),
 });
 
-export const topicResolutionSchema = v.object({
-	existingTopicId: v.nullable(v.pipe(v.string(), v.minLength(1), v.maxLength(100))),
-	createNew: v.boolean(),
-	reason: boundedText(1, 500),
-});
-
 export const toolTopicResolutionSchema = v.variant("decision", [
 	v.object({
 		decision: v.literal("attach"),
@@ -125,7 +119,6 @@ export type PostAnalysis = v.InferOutput<typeof postAnalysisSchema>;
 export type PostAnalysisBatch = v.InferOutput<typeof postAnalysisBatchSchema>;
 export type StructuredReportDraft = v.InferOutput<typeof reportDraftSchema>;
 export type StructuredTopicPostAnalysis = v.InferOutput<typeof topicPostAnalysisSchema>;
-export type StructuredTopicResolution = v.InferOutput<typeof topicResolutionSchema>;
 export type StructuredToolTopicResolution = v.InferOutput<
 	typeof toolTopicResolutionSchema
 >;

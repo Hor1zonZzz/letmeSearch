@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-	classifyTopicPosts,
-	resolveTopicCandidate,
-} from "../../src/news/topic-classifier";
-import type { NewsTopic, PostForTriage, TopicCandidate } from "../../src/news/types";
+import { classifyTopicPosts } from "../../src/news/topic-classifier";
+import type { PostForTriage, TopicCandidate } from "../../src/news/types";
 
 function post(): PostForTriage {
 	return {
@@ -83,30 +80,4 @@ describe("topic classifier", () => {
 		}))).rejects.toThrow("Ignored post");
 	});
 
-	it("selects only a supplied active topic ID", async () => {
-		const activeTopic: NewsTopic = {
-			id: "topic-1",
-			...candidate,
-			status: "active",
-			revision: 0,
-			organizationIds: ["anthropic"],
-			firstSeenAt: "2026-07-21T10:00:00.000Z",
-			lastUpdatedAt: "2026-07-22T09:00:00.000Z",
-		};
-		const request = vi.fn(async () => modelResponse({
-			existingTopicId: "topic-1",
-			createNew: false,
-			reason: "Same product update",
-		}));
-
-		const result = await resolveTopicCandidate({
-			candidate,
-			organizationIds: ["anthropic"],
-			activeTopics: [activeTopic],
-			request,
-		});
-
-		expect(result).toBe("topic-1");
-		expect(request).toHaveBeenCalledOnce();
-	});
 });

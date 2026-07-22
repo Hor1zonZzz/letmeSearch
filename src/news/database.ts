@@ -24,7 +24,6 @@ import type {
 	TopicCandidate,
 	TopicMetricPost,
 	TopicMetricResultInput,
-	TopicResolutionShadowComparison,
 	TopicSearchDocument,
 	TriageDecision,
 } from "./types";
@@ -447,6 +446,13 @@ CREATE TABLE topic_resolution_shadow_comparisons (
 
 CREATE INDEX topic_resolution_shadow_post_idx
 	ON topic_resolution_shadow_comparisons(post_id, resolver_version, created_at);
+`,
+	},
+	{
+		version: 7,
+		name: "remove-legacy-topic-resolver-shadow-state",
+		sql: `
+DROP TABLE IF EXISTS topic_resolution_shadow_comparisons;
 `,
 	},
 ];
@@ -1045,7 +1051,6 @@ ON CONFLICT(post_id) DO UPDATE SET
 		limit: number,
 		resolutionVersion: number,
 		now: string,
-		excludeShadowed = false,
 	): PendingTopicResolution[] {
 		const rows = this.#database.prepare(`
 SELECT resolutions.post_id, posts.x_post_id, posts.published_at,
@@ -1068,21 +1073,8 @@ WHERE analyses.status = 'success'
 			AND resolutions.next_retry_at <= ?
 		)
 	)
-	AND (
-		? = 0 OR NOT EXISTS (
-			SELECT 1 FROM topic_resolution_shadow_comparisons shadow
-			WHERE shadow.post_id = resolutions.post_id
-				AND shadow.resolver_version = ?
-		)
-	)
 ORDER BY posts.published_at DESC, posts.x_post_id DESC
-LIMIT ?`).all(
-			resolutionVersion,
-			now,
-			excludeShadowed ? 1 : 0,
-			resolutionVersion,
-			limit,
-		) as Row[];
+LIMIT ?`).all(resolutionVersion, now, limit) as Row[];
 		return rows.map((row) => ({
 			postId: rowString(row, "post_id"),
 			xPostId: rowString(row, "x_post_id"),
@@ -1600,74 +1592,6 @@ INSERT INTO topic_resolution_events(
 			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
 			throw error;
 		}
-	}
-
-	recordTopicResolutionShadowComparison(input: {
-		postId: string;
-		resolverVersion: number;
-		toolDecision: "attach" | "create" | "defer";
-		toolTopicId: string | null;
-		toolConfidence: number;
-		toolReason: string;
-		legacyDecision: "attach" | "create" | "error";
-		legacyTopicId: string | null;
-		legacyError: string | null;
-		agreed: boolean;
-		searchTrace: unknown;
-		toolModelRunId: string | null;
-		legacyModelRunId: string | null;
-		now: string;
-	}): string {
-		const id = randomUUID();
-		this.#database.prepare(`
-INSERT INTO topic_resolution_shadow_comparisons(
-	id, post_id, resolver_version, tool_decision, tool_topic_id,
-	tool_confidence, tool_reason, legacy_decision, legacy_topic_id,
-	legacy_error, agreed, search_trace_json, tool_model_run_id,
-	legacy_model_run_id, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-			id,
-			input.postId,
-			input.resolverVersion,
-			input.toolDecision,
-			input.toolTopicId,
-			input.toolConfidence,
-			input.toolReason.slice(0, 500),
-			input.legacyDecision,
-			input.legacyTopicId,
-			input.legacyError?.slice(0, 500) ?? null,
-			input.agreed ? 1 : 0,
-			JSON.stringify(input.searchTrace),
-			input.toolModelRunId,
-			input.legacyModelRunId,
-			input.now,
-		);
-		return id;
-	}
-
-	listTopicResolutionShadowComparisons(
-		postId: string,
-	): TopicResolutionShadowComparison[] {
-		const rows = this.#database.prepare(`
-SELECT * FROM topic_resolution_shadow_comparisons
-WHERE post_id = ? ORDER BY created_at ASC, id ASC`).all(postId) as Row[];
-		return rows.map((row) => ({
-			id: rowString(row, "id"),
-			postId: rowString(row, "post_id"),
-			resolverVersion: rowNumber(row, "resolver_version"),
-			toolDecision: rowString(row, "tool_decision") as TopicResolutionShadowComparison["toolDecision"],
-			toolTopicId: nullableString(row, "tool_topic_id"),
-			toolConfidence: rowNumber(row, "tool_confidence"),
-			toolReason: rowString(row, "tool_reason"),
-			legacyDecision: rowString(row, "legacy_decision") as TopicResolutionShadowComparison["legacyDecision"],
-			legacyTopicId: nullableString(row, "legacy_topic_id"),
-			legacyError: nullableString(row, "legacy_error"),
-			agreed: rowNumber(row, "agreed") === 1,
-			searchTrace: parseJson<unknown>(row.search_trace_json, null),
-			toolModelRunId: nullableString(row, "tool_model_run_id"),
-			legacyModelRunId: nullableString(row, "legacy_model_run_id"),
-			createdAt: rowString(row, "created_at"),
-		}));
 	}
 
 	markTopicResolutionFailed(input: {

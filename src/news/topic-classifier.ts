@@ -2,20 +2,10 @@ import OpenAI from "openai";
 import * as v from "valibot";
 import {
 	topicPostAnalysisBatchSchema,
-	topicResolutionSchema,
 	type StructuredTopicPostAnalysis,
-	type StructuredTopicResolution,
 } from "./schemas";
-import {
-	topicClassificationPrompt,
-	topicResolutionPrompt,
-} from "./topic-prompts";
-import type {
-	NewsTopic,
-	PostForTriage,
-	PostTopicAnalysis,
-	TopicCandidate,
-} from "./types";
+import { topicClassificationPrompt } from "./topic-prompts";
+import type { PostForTriage, PostTopicAnalysis } from "./types";
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-pro";
@@ -150,50 +140,4 @@ export async function classifyTopicPosts(
 		parseJsonResponse(response),
 	);
 	return normalizeTopicPostAnalyses(posts, batch.analyses);
-}
-
-export function normalizeTopicResolution(
-	candidates: NewsTopic[],
-	resolution: StructuredTopicResolution,
-): string | null {
-	if (resolution.createNew) {
-		if (resolution.existingTopicId !== null) {
-			throw new Error(
-				"New topic resolution also returned an existing topic ID",
-			);
-		}
-		return null;
-	}
-	if (!resolution.existingTopicId) {
-		throw new Error("Existing topic resolution omitted its topic ID");
-	}
-	if (!candidates.some((topic) => topic.id === resolution.existingTopicId)) {
-		throw new Error(
-			`Topic resolution returned unknown ID: ${resolution.existingTopicId}`,
-		);
-	}
-	return resolution.existingTopicId;
-}
-
-export async function resolveTopicCandidate(options: {
-	candidate: TopicCandidate;
-	organizationIds: string[];
-	activeTopics: NewsTopic[];
-	request?: TopicModelRequester;
-}): Promise<string | null> {
-	const candidates = options.activeTopics;
-	if (candidates.length === 0) return null;
-	const request = options.request ?? requestTopicJson;
-	const response = await request(
-		topicResolutionPrompt({
-			candidate: options.candidate,
-			organizationIds: options.organizationIds,
-			activeTopics: candidates,
-		}),
-	);
-	const resolution = v.parse(
-		topicResolutionSchema,
-		parseJsonResponse(response),
-	);
-	return normalizeTopicResolution(candidates, resolution);
 }
