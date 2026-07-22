@@ -102,7 +102,7 @@ function collectStrongReferences(
 	}
 	for (const key of ["quoted_tweet", "retweeted_tweet"]) {
 		const nested = asRecord(record[key]);
-		if (typeof nested.id === "string") references.add(`${key}:${nested.id}`);
+		if (typeof nested.id === "string") references.add(`x_post:${nested.id}`);
 		collectStrongReferences(nested, references, depth + 1);
 	}
 	for (const [key, nested] of Object.entries(record)) {
@@ -129,7 +129,7 @@ export function extractStrongReferences(
 	quotedXPostId: string | null = null,
 ): string[] {
 	const references = new Set<string>();
-	if (quotedXPostId) references.add(`quoted_tweet:${quotedXPostId}`);
+	if (quotedXPostId) references.add(`x_post:${quotedXPostId}`);
 	collectStrongReferences(rawPayload, references);
 	return [...references].sort();
 }
@@ -198,7 +198,7 @@ function organizationRelation(
 function documentReferences(document: TopicSearchDocument): Set<string> {
 	const references = new Set<string>();
 	for (const post of document.sourcePosts) {
-		references.add(`source_post:${post.xPostId}`);
+		references.add(`x_post:${post.xPostId}`);
 		collectStrongReferences(post.rawPayload, references);
 	}
 	return references;

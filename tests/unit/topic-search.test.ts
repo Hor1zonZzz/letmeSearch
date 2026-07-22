@@ -115,6 +115,29 @@ describe("active Topic search", () => {
 			overlapOrganizationIds: ["microsoft"],
 		});
 		expect(result.matches[0]?.sourceTime.nearestDeltaHours).toBe(22);
+
+		const quotedResult = searchActiveTopics({
+			database,
+			subject: {
+				...subject,
+				titleZh: "完全不同的转述",
+				titleEn: "A completely different paraphrase",
+				summaryZh: "引用来源帖。",
+				summaryEn: "Quotes the source post.",
+				organizationIds: [],
+				strongReferences: ["x_post:matching"],
+			},
+			input: {
+				focus: null,
+				strategy: "strong_reference",
+				detail: "compact",
+				limit: 2,
+			},
+		});
+		expect(quotedResult.matches[0]).toMatchObject({
+			titleEn: "Microsoft OpenAI Security Program",
+			strongReferenceMatches: ["x_post:matching"],
+		});
 	});
 
 	it("exposes bounded read-only searches with opaque pagination", async () => {
