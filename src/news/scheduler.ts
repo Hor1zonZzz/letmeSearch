@@ -1,5 +1,6 @@
 import { invoke } from "@flue/runtime";
 import { Cron } from "croner";
+import newsTopicResolve from "../workflows/news-topic-resolve";
 import newsTriage from "../workflows/news-triage";
 import {
 	runScheduledNewsIngest,
@@ -8,6 +9,7 @@ import {
 
 export const NEWS_INGEST_SCHEDULE = "0 0,4,8,12,15-23 * * *";
 export const NEWS_METRICS_SCHEDULE = "45 0,4,8,12,16,20 * * *";
+export const NEWS_TOPIC_RESOLUTION_SCHEDULE = "*/10 * * * *";
 
 let jobs: Cron[] | null = null;
 
@@ -43,6 +45,10 @@ export function startNewsScheduler(): Cron[] {
 			const receipt = await invoke(newsTriage, { input: {} });
 			log("news-triage-admitted", receipt);
 		}),
+		new Cron(NEWS_TOPIC_RESOLUTION_SCHEDULE, common, async () => {
+			const receipt = await invoke(newsTopicResolve, { input: {} });
+			log("news-topic-resolution-admitted", receipt);
+		}),
 		new Cron(NEWS_METRICS_SCHEDULE, common, async () => {
 			const stats = await runScheduledNewsMetrics();
 			log("news-metrics-completed", stats);
@@ -51,6 +57,7 @@ export function startNewsScheduler(): Cron[] {
 	log("news-scheduler-started", {
 		timezone: "UTC",
 		ingestAndTriage: NEWS_INGEST_SCHEDULE,
+		topicResolution: NEWS_TOPIC_RESOLUTION_SCHEDULE,
 		metrics: NEWS_METRICS_SCHEDULE,
 	});
 	return jobs;

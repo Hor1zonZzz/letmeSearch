@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewsDatabase } from "../../src/news/database";
 import { normalizeTwitterApiTweet } from "../../src/news/normalizer";
-import type { PostTopicAnalysis } from "../../src/news/types";
+import type {
+	PostForTriage,
+	PostTopicAnalysis,
+} from "../../src/news/types";
 import {
 	runTopicBacklog,
 	runTopicPipeline,
@@ -86,7 +89,7 @@ describe("topic pipeline", () => {
 				fetchedAt: "2026-07-22T10:01:00.000Z",
 			});
 		}
-		const classifier = vi.fn(async () => [
+		const classifier = vi.fn(async (_posts: PostForTriage[]) => [
 			analysis(first.id, "important"),
 			analysis(second.id, "observe"),
 		]);
@@ -114,6 +117,10 @@ describe("topic pipeline", () => {
 		)).toHaveLength(2);
 		expect(database.listPostsForTopicAnalysis()).toEqual([]);
 		expect(classifier).toHaveBeenCalledOnce();
+		expect(classifier.mock.calls[0]?.[0].map((post) => post.xPostId)).toEqual([
+			"x-2",
+			"x-1",
+		]);
 	});
 
 	it("excludes topics whose newest source post is older than 72 hours", () => {

@@ -856,7 +856,7 @@ FROM posts
 LEFT JOIN post_articles ON post_articles.post_id = posts.id
 WHERE post_articles.post_id IS NULL
 	OR (post_articles.status = 'failed' AND post_articles.updated_at <= ?)
-ORDER BY posts.published_at ASC
+ORDER BY posts.published_at DESC
 LIMIT ?`)
 				.all(retryFailedBefore, limit) as Row[]
 		).map((row) => ({
@@ -936,7 +936,7 @@ WHERE post_articles.status IN ('available', 'not_article')
 			AND post_topic_analyses.updated_at <= ?
 		)
 	)
-ORDER BY posts.published_at ASC
+ORDER BY posts.published_at DESC
 LIMIT ?`)
 			.all(analysisVersion, analysisVersion, retryFailedBefore, limit) as Row[];
 		return rows.map((row) => ({

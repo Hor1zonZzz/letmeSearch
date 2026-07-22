@@ -66,10 +66,12 @@ describe("Topic resolution pipeline", () => {
 			});
 		}
 
+		const attemptedIds: string[] = [];
 		const stats = await runTopicResolutionBatch({
 			database,
 			now: () => new Date("2026-07-22T12:00:00.000Z"),
-			requester: async ({ search }) => {
+			requester: async ({ pending, search }) => {
+				attemptedIds.push(pending.xPostId);
 				const result = await search.tool.run({
 					input: {
 						focus: null,
@@ -113,6 +115,7 @@ describe("Topic resolution pipeline", () => {
 			postsDeferred: 0,
 			postsFailed: 0,
 		});
+		expect(attemptedIds).toEqual(["x-2", "x-1"]);
 		expect(database.listActiveTopics("2026-07-19T00:00:00.000Z")).toEqual([
 			expect.objectContaining({ revision: 1 }),
 		]);
