@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "PORT=${PORT:-3107} NEWS_SCHEDULER_ENABLED=true flue dev --target node",
     "build": "flue build --target node",
-    "start": "PORT=${PORT:-3107} NEWS_SCHEDULER_ENABLED=true node dist/server.mjs",
+    "start": "PORT=${PORT:-3107} NEWS_SCHEDULER_ENABLED=true node --env-file-if-exists=.env dist/server.mjs",
     "agent": "flue run hello-world --target node",
     "workflow": "flue run summarize --target node",
     "search": "flue run agentic-search --target node",
