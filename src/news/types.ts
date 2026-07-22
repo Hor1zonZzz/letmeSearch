@@ -107,9 +107,27 @@ export type PostTopicAnalysis = {
 	confidence: number;
 };
 
+export type TopicResolutionStatus =
+	| "pending"
+	| "resolved"
+	| "deferred"
+	| "failed";
+
+export type PendingTopicResolution = {
+	postId: string;
+	xPostId: string;
+	publishedAt: string;
+	organizationIds: string[];
+	unknownOrganizationCandidates: string[];
+	topicCandidate: TopicCandidate;
+	attemptCount: number;
+	resolutionVersion: number;
+};
+
 export type NewsTopic = TopicCandidate & {
 	id: string;
 	status: "active" | "archived";
+	revision: number;
 	organizationIds: string[];
 	firstSeenAt: string;
 	lastUpdatedAt: string;

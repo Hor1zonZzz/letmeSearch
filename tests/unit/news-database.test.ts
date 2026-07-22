@@ -61,6 +61,42 @@ describe('official news database', () => {
 		expect(db.listPostsForAnalysis()).toHaveLength(1);
 	});
 
+	it('queues successful tracked analyses for independent Topic resolution', () => {
+		const db = database();
+		db.seedAccounts([{ handle: 'OpenAI', organization: 'OpenAI' }]);
+		const account = onlyAccount(db);
+		const post = db.upsertPost(account.id, normalizedPost()).post;
+		const now = '2026-07-22T10:01:00.000Z';
+		db.savePostTopicAnalysis({
+			postId: post.id,
+			decision: 'observe',
+			isImportant: false,
+			domain: 'ai_technology',
+			organizationIds: ['openai'],
+			unknownOrganizationCandidates: [],
+			topicCandidate: {
+				titleZh: 'OpenAI 发布 GPT Example',
+				titleEn: 'OpenAI Releases GPT Example',
+				summaryZh: 'OpenAI 发布测试模型。',
+				summaryEn: 'OpenAI released a test model.',
+				type: 'model_release',
+			},
+			reason: 'Potential release',
+			confidence: 0.8,
+		}, 1, now);
+		db.queuePostTopicResolution(post.id, 1, now);
+
+		expect(db.listPendingTopicResolutions(10, 1, now)).toEqual([
+			expect.objectContaining({
+				postId: post.id,
+				xPostId: post.xPostId,
+				organizationIds: ['openai'],
+				attemptCount: 0,
+				resolutionVersion: 1,
+			}),
+		]);
+	});
+
 	it('commits an event and immutable report version atomically', () => {
 		const db = database();
 		db.seedAccounts([{ handle: 'OpenAI', organization: 'OpenAI' }]);

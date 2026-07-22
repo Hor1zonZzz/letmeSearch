@@ -12,6 +12,7 @@ import type {
 	NewsEvent,
 	NewsTopic,
 	NormalizedPost,
+	PendingTopicResolution,
 	PostForAnalysis,
 	PostForMetricRefresh,
 	PostForTriage,
@@ -357,6 +358,67 @@ CREATE INDEX topic_metric_snapshots_observed_idx
 	ON topic_metric_snapshots(topic_id, observed_at DESC);
 CREATE INDEX topic_heat_states_rank_idx
 	ON topic_heat_states(state, current_rank);
+`,
+	},
+	{
+		version: 5,
+		name: "add-topic-resolution-state",
+		sql: `
+ALTER TABLE topics ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0);
+
+CREATE TABLE post_topic_resolutions (
+	post_id TEXT PRIMARY KEY REFERENCES posts(id) ON DELETE CASCADE,
+	status TEXT NOT NULL CHECK (status IN ('pending', 'resolved', 'deferred', 'failed')),
+	decision TEXT CHECK (decision IS NULL OR decision IN ('attach', 'create', 'defer')),
+	target_topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+	confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+	reason TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+	next_retry_at TEXT,
+	error TEXT,
+	resolution_version INTEGER NOT NULL,
+	resolved_at TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	CHECK (
+		(status = 'resolved' AND decision IN ('attach', 'create') AND resolved_at IS NOT NULL)
+		OR (status = 'deferred' AND decision = 'defer')
+		OR (status IN ('pending', 'failed') AND decision IS NULL)
+	)
+);
+
+CREATE TABLE topic_resolution_events (
+	id TEXT PRIMARY KEY,
+	post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+	decision TEXT NOT NULL CHECK (decision IN ('attach', 'create', 'defer', 'reassign', 'merge', 'split', 'undo')),
+	from_topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+	to_topic_id TEXT REFERENCES topics(id) ON DELETE SET NULL,
+	resolver_version INTEGER NOT NULL,
+	confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+	reason TEXT NOT NULL,
+	search_trace_json TEXT CHECK (search_trace_json IS NULL OR json_valid(search_trace_json)),
+	model_run_id TEXT,
+	created_at TEXT NOT NULL
+);
+
+CREATE INDEX post_topic_resolutions_queue_idx
+	ON post_topic_resolutions(status, next_retry_at, updated_at);
+CREATE INDEX topic_resolution_events_post_idx
+	ON topic_resolution_events(post_id, created_at);
+CREATE INDEX topic_organizations_organization_idx
+	ON topic_organizations(organization_id, topic_id);
+CREATE INDEX posts_published_x_post_idx ON posts(published_at, x_post_id);
+
+INSERT INTO post_topic_resolutions(
+	post_id, status, decision, target_topic_id, confidence, reason,
+	attempt_count, resolution_version, resolved_at, created_at, updated_at
+)
+SELECT analyses.post_id, 'resolved', 'attach', topic_posts.topic_id,
+	analyses.confidence, 'Backfilled from existing Topic membership',
+	0, 1, analyses.analyzed_at, analyses.analyzed_at, analyses.updated_at
+FROM post_topic_analyses analyses
+JOIN topic_posts ON topic_posts.post_id = analyses.post_id
+WHERE analyses.status = 'success';
 `,
 	},
 ];
@@ -887,6 +949,71 @@ LIMIT ?`)
 		}));
 	}
 
+	queuePostTopicResolution(
+		postId: string,
+		resolutionVersion: number,
+		now: string,
+	): void {
+		this.#database.prepare(`
+INSERT INTO post_topic_resolutions(
+	post_id, status, decision, attempt_count, resolution_version, created_at, updated_at
+) VALUES (?, 'pending', NULL, 0, ?, ?, ?)
+ON CONFLICT(post_id) DO UPDATE SET
+	status = 'pending', decision = NULL, target_topic_id = NULL,
+	confidence = NULL, reason = NULL, next_retry_at = NULL, error = NULL,
+	resolution_version = excluded.resolution_version, resolved_at = NULL,
+	updated_at = excluded.updated_at`)
+			.run(postId, resolutionVersion, now, now);
+	}
+
+	listPendingTopicResolutions(
+		limit: number,
+		resolutionVersion: number,
+		now: string,
+	): PendingTopicResolution[] {
+		const rows = this.#database.prepare(`
+SELECT resolutions.post_id, posts.x_post_id, posts.published_at,
+	analyses.organization_ids_json, analyses.unknown_organizations_json,
+	analyses.topic_candidate_json, resolutions.attempt_count,
+	resolutions.resolution_version
+FROM post_topic_resolutions resolutions
+JOIN post_topic_analyses analyses ON analyses.post_id = resolutions.post_id
+JOIN posts ON posts.id = resolutions.post_id
+WHERE analyses.status = 'success'
+	AND analyses.decision IN ('important', 'observe')
+	AND analyses.topic_candidate_json IS NOT NULL
+	AND (
+		resolutions.resolution_version < ?
+		OR resolutions.status = 'pending'
+		OR (
+			resolutions.status IN ('failed', 'deferred')
+			AND resolutions.next_retry_at IS NOT NULL
+			AND resolutions.next_retry_at <= ?
+		)
+	)
+ORDER BY posts.published_at DESC, posts.x_post_id DESC
+LIMIT ?`).all(resolutionVersion, now, limit) as Row[];
+		return rows.map((row) => ({
+			postId: rowString(row, "post_id"),
+			xPostId: rowString(row, "x_post_id"),
+			publishedAt: rowString(row, "published_at"),
+			organizationIds: parseJson<string[]>(row.organization_ids_json, []),
+			unknownOrganizationCandidates: parseJson<string[]>(
+				row.unknown_organizations_json,
+				[],
+			),
+			topicCandidate: parseJson<TopicCandidate>(row.topic_candidate_json, {
+				titleZh: "",
+				titleEn: "",
+				summaryZh: "",
+				summaryEn: "",
+				type: "other",
+			}),
+			attemptCount: rowNumber(row, "attempt_count"),
+			resolutionVersion: rowNumber(row, "resolution_version"),
+		}));
+	}
+
 	savePostTopicAnalysis(
 		analysis: PostTopicAnalysis,
 		analysisVersion: number,
@@ -957,7 +1084,7 @@ WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`)
 		const rows = this.#database
 			.prepare(`
 SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
-	topics.summary_en, topics.topic_type, topics.status,
+	topics.summary_en, topics.topic_type, topics.status, topics.revision,
 	topics.first_seen_at, topics.last_updated_at,
 	topic_organizations.organization_id
 FROM topics
@@ -993,6 +1120,7 @@ ORDER BY (
 				summaryEn: rowString(row, "summary_en"),
 				type: rowString(row, "topic_type") as NewsTopic["type"],
 				status: rowString(row, "status") as NewsTopic["status"],
+				revision: rowNumber(row, "revision"),
 				organizationIds: organizationId ? [organizationId] : [],
 				firstSeenAt: rowString(row, "first_seen_at"),
 				lastUpdatedAt: rowString(row, "last_updated_at"),

@@ -88,6 +88,7 @@ describe("topic classifier", () => {
 			id: "topic-1",
 			...candidate,
 			status: "active",
+			revision: 0,
 			organizationIds: ["anthropic"],
 			firstSeenAt: "2026-07-21T10:00:00.000Z",
 			lastUpdatedAt: "2026-07-22T09:00:00.000Z",
