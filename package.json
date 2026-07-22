@@ -11,7 +11,7 @@
     "search": "flue run agentic-search --target node",
     "news:pull": "flue run official-news-pull --target node --input '{\"maxPostsPerAccount\":5}'",
     "news:ingest": "tsx --env-file-if-exists=.env src/commands/news-ingest.ts",
-    "news:triage": "flue run news-triage --target node --input '{}'",
+    "news:triage": "flue run workflow:news-triage --target node --input '{}'",
     "news:resolve": "flue run news-topic-resolve --target node --input '{}'",
     "news:topics:dry-run": "tsx --env-file-if-exists=.env src/commands/news-topic-dedup.ts",
     "news:metrics": "tsx --env-file-if-exists=.env src/commands/news-metrics.ts",
