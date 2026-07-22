@@ -88,6 +88,9 @@ function normalizedUrl(value: string): string | null {
 	}
 }
 
+const URL_FIELDS = new Set(["expanded_url", "unwound_url", "url"]);
+const SKIPPED_REFERENCE_FIELDS = new Set(["author", "user_refs_results"]);
+
 function collectStrongReferences(
 	value: unknown,
 	references: Set<string>,
@@ -95,32 +98,30 @@ function collectStrongReferences(
 ): void {
 	if (depth > 5 || typeof value !== "object" || value === null) return;
 	const record = asRecord(value);
-	if (typeof record.id === "string") {
-		if (record.article && typeof record.article === "object") {
-			references.add(`x_article:${record.id}`);
-		}
-	}
-	for (const key of ["quoted_tweet", "retweeted_tweet"]) {
-		const nested = asRecord(record[key]);
-		if (typeof nested.id === "string") references.add(`x_post:${nested.id}`);
-		collectStrongReferences(nested, references, depth + 1);
-	}
+	if (
+		typeof record.id === "string" && record.article &&
+		typeof record.article === "object"
+	) references.add(`x_article:${record.id}`);
 	for (const [key, nested] of Object.entries(record)) {
+		const nestedRecord = asRecord(nested);
 		if (
-			typeof nested === "string" &&
-			["expanded_url", "unwound_url", "url"].includes(key)
-		) {
-			const url = normalizedUrl(nested);
-			if (url) references.add(`url:${url}`);
-		} else if (Array.isArray(nested)) {
-			for (const item of nested) collectStrongReferences(item, references, depth + 1);
-		} else if (
-			typeof nested === "object" &&
-			nested !== null &&
-			!["author", "user_refs_results"].includes(key)
-		) {
-			collectStrongReferences(nested, references, depth + 1);
+			(key === "quoted_tweet" || key === "retweeted_tweet") &&
+			typeof nestedRecord.id === "string"
+		) references.add(`x_post:${nestedRecord.id}`);
+		if (typeof nested === "string") {
+			if (URL_FIELDS.has(key)) {
+				const url = normalizedUrl(nested);
+				if (url) references.add(`url:${url}`);
+			}
+			continue;
 		}
+		if (Array.isArray(nested)) {
+			for (const item of nested)
+				collectStrongReferences(item, references, depth + 1);
+			continue;
+		}
+		if (!SKIPPED_REFERENCE_FIELDS.has(key))
+			collectStrongReferences(nested, references, depth + 1);
 	}
 }
 
@@ -131,7 +132,7 @@ export function extractStrongReferences(
 	const references = new Set<string>();
 	if (quotedXPostId) references.add(`x_post:${quotedXPostId}`);
 	collectStrongReferences(rawPayload, references);
-	return [...references].sort();
+	return [...references].sort((left, right) => left.localeCompare(right));
 }
 
 export function buildTopicSearchSubject(
@@ -179,7 +180,9 @@ function organizationRelation(
 ): Pick<TopicSearchMatch, "organizationRelation" | "overlapOrganizationIds"> {
 	const candidate = new Set(candidateIds);
 	const topic = new Set(topicIds);
-	const overlap = [...candidate].filter((id) => topic.has(id)).sort();
+	const overlap = [...candidate]
+		.filter((id) => topic.has(id))
+		.sort((left, right) => left.localeCompare(right));
 	if (
 		candidate.size === topic.size &&
 		overlap.length === candidate.size
@@ -190,9 +193,9 @@ function organizationRelation(
 	if (topic.size > 0 && overlap.length === topic.size) {
 		return { organizationRelation: "topic_subset", overlapOrganizationIds: overlap };
 	}
-	return overlap.length > 0
-		? { organizationRelation: "overlap", overlapOrganizationIds: overlap }
-		: { organizationRelation: "disjoint", overlapOrganizationIds: [] };
+	if (overlap.length > 0)
+		return { organizationRelation: "overlap", overlapOrganizationIds: overlap };
+	return { organizationRelation: "disjoint", overlapOrganizationIds: [] };
 }
 
 function documentReferences(document: TopicSearchDocument): Set<string> {
@@ -206,6 +209,29 @@ function documentReferences(document: TopicSearchDocument): Set<string> {
 
 function excerpt(value: string, maximum = 300): string {
 	return value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`;
+}
+
+function searchScore(options: {
+	strategy: TopicSearchStrategy;
+	strongReferenceCount: number;
+	organizationScore: number;
+	lexicalScore: number;
+	sameType: boolean;
+}): number {
+	switch (options.strategy) {
+		case "strong_reference":
+			return options.strongReferenceCount * 1_000 + options.lexicalScore;
+		case "organization":
+			return options.organizationScore * 100 + options.lexicalScore;
+		case "subject":
+			return options.lexicalScore * 100 + options.organizationScore;
+		case "balanced":
+			return options.strongReferenceCount * 1_000 +
+				options.organizationScore * 20 + (options.sameType ? 10 : 0) +
+				options.lexicalScore * 10;
+		default:
+			throw new Error(`Unsupported Topic search strategy: ${options.strategy}`);
+	}
 }
 
 export function searchActiveTopics(options: {
@@ -254,7 +280,7 @@ export function searchActiveTopics(options: {
 		const references = documentReferences(document);
 		const strongReferenceMatches = [...subjectReferences]
 			.filter((reference) => references.has(reference))
-			.sort();
+			.sort((left, right) => left.localeCompare(right));
 		const times = document.sourcePosts.map((post) => ({
 			publishedAt: post.publishedAt,
 			deltaHours: Math.abs(new Date(post.publishedAt).getTime() - anchor) / 3_600_000,
@@ -266,15 +292,13 @@ export function searchActiveTopics(options: {
 			left.publishedAt.localeCompare(right.publishedAt),
 		);
 		if (!nearest) throw new Error(`Topic ${document.id} has no search evidence`);
-		const organizationScore = relation.overlapOrganizationIds.length;
-		const score = options.input.strategy === "strong_reference"
-			? strongReferenceMatches.length * 1_000 + lexicalScore
-			: options.input.strategy === "organization"
-				? organizationScore * 100 + lexicalScore
-				: options.input.strategy === "subject"
-					? lexicalScore * 100 + organizationScore
-					: strongReferenceMatches.length * 1_000 + organizationScore * 20 +
-						(document.type === options.subject.type ? 10 : 0) + lexicalScore * 10;
+		const score = searchScore({
+			strategy: options.input.strategy,
+			strongReferenceCount: strongReferenceMatches.length,
+			organizationScore: relation.overlapOrganizationIds.length,
+			lexicalScore,
+			sameType: document.type === options.subject.type,
+		});
 		return {
 			score,
 			match: {
