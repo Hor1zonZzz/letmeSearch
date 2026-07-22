@@ -50,6 +50,7 @@ export default defineWorkflow({
 						{
 							result: topicBatchCompletionSchema,
 							tools: toolSession.tools,
+							signal: AbortSignal.timeout(5 * 60 * 1_000),
 						},
 					);
 					return data;
