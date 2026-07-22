@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { OrganizationId } from "./organizations";
 import type {
 	AccountProfile,
+	CurrentBreakoutTopic,
 	CurrentHotTopic,
 	MonitoredAccount,
 	NewsTopic,
@@ -14,6 +15,7 @@ import type {
 	PostForTriage,
 	PostMetricSnapshotInput,
 	PostTopicAnalysis,
+	PreviousTopicBreakoutMetric,
 	PreviousTopicMetric,
 	StoredPost,
 	StoredTopicHeatState,
@@ -542,6 +544,26 @@ DROP INDEX IF EXISTS events_updated_idx;
 DROP TABLE IF EXISTS events;
 `,
 	},
+	{
+		version: 11,
+		name: "add-topic-breakout-metrics",
+		sql: `
+CREATE TABLE topic_breakout_metric_snapshots (
+	topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+	observed_at TEXT NOT NULL,
+	effective_reach_ratio REAL NOT NULL CHECK (effective_reach_ratio >= 0),
+	reach_velocity_per_hour REAL NOT NULL CHECK (reach_velocity_per_hour >= 0),
+	reach_score REAL NOT NULL CHECK (reach_score >= 0 AND reach_score <= 1),
+	reach_velocity_score REAL NOT NULL CHECK (reach_velocity_score >= 0 AND reach_velocity_score <= 1),
+	breakout_heat REAL NOT NULL CHECK (breakout_heat >= 0 AND breakout_heat <= 1),
+	PRIMARY KEY (topic_id, observed_at),
+	FOREIGN KEY (topic_id, observed_at)
+		REFERENCES topic_metric_snapshots(topic_id, observed_at) ON DELETE CASCADE
+);
+CREATE INDEX topic_breakout_snapshots_observed_idx
+	ON topic_breakout_metric_snapshots(topic_id, observed_at DESC);
+`,
+	},
 ];
 
 function rowString(row: Row, key: string): string {
@@ -753,7 +775,7 @@ ORDER BY handle COLLATE NOCASE`)
 UPDATE monitored_accounts SET
 	x_user_id = COALESCE(?, x_user_id),
 	display_name = COALESCE(?, display_name),
-	followers_count = COALESCE(?, followers_count),
+	followers_count = COALESCE(followers_count, ?),
 	raw_profile_json = COALESCE(?, raw_profile_json),
 	monitoring_status = 'active',
 	ingest_boundary_post_at = CASE
@@ -1513,6 +1535,7 @@ ON CONFLICT(post_id, observed_at) DO UPDATE SET
 		const rows = this.#database
 			.prepare(`
 SELECT topic_posts.topic_id, posts.id AS post_id, posts.published_at,
+	monitored_accounts.followers_count,
 	(SELECT view_count FROM post_metric_snapshots
 		WHERE post_metric_snapshots.post_id = posts.id
 		ORDER BY observed_at DESC LIMIT 1) AS views,
@@ -1521,6 +1544,7 @@ SELECT topic_posts.topic_id, posts.id AS post_id, posts.published_at,
 		ORDER BY observed_at DESC LIMIT 1) AS metric_observed_at
 FROM topic_posts
 JOIN posts ON posts.id = topic_posts.post_id
+JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
 JOIN topics ON topics.id = topic_posts.topic_id
 LEFT JOIN topic_heat_states ON topic_heat_states.topic_id = topics.id
 WHERE topics.status = 'active'
@@ -1533,6 +1557,8 @@ ORDER BY topic_posts.topic_id, posts.published_at`)
 			publishedAt: rowString(row, "published_at"),
 			views: typeof row.views === "number" ? row.views : null,
 			metricObservedAt: nullableString(row, "metric_observed_at"),
+			followersCount:
+				typeof row.followers_count === "number" ? row.followers_count : null,
 		}));
 	}
 
@@ -1553,6 +1579,24 @@ WHERE snapshots.observed_at = (
 		}));
 	}
 
+	listPreviousTopicBreakoutMetrics(): PreviousTopicBreakoutMetric[] {
+		const rows = this.#database
+			.prepare(`
+SELECT snapshots.topic_id, snapshots.observed_at,
+	snapshots.effective_reach_ratio
+FROM topic_breakout_metric_snapshots snapshots
+WHERE snapshots.observed_at = (
+	SELECT max(latest.observed_at) FROM topic_breakout_metric_snapshots latest
+	WHERE latest.topic_id = snapshots.topic_id
+)`)
+			.all() as Row[];
+		return rows.map((row) => ({
+			topicId: rowString(row, "topic_id"),
+			observedAt: rowString(row, "observed_at"),
+			effectiveReachRatio: rowNumber(row, "effective_reach_ratio"),
+		}));
+	}
+
 	listCurrentHotTopics(): CurrentHotTopic[] {
 		return (
 			this.#database
@@ -1560,15 +1604,14 @@ WHERE snapshots.observed_at = (
 SELECT topics.id AS topic_id, topics.title_zh, topics.title_en,
 	topic_heat_states.current_effective_views,
 	topic_heat_states.current_velocity_per_hour,
-	topic_heat_states.current_heat, topic_heat_states.state,
-	topic_heat_states.current_rank
+	topic_heat_states.current_heat, topic_heat_states.state
 FROM topic_heat_states
 JOIN topics ON topics.id = topic_heat_states.topic_id
 WHERE topic_heat_states.state IN ('ranked', 'cooling')
-	AND topic_heat_states.current_rank IS NOT NULL
-ORDER BY topic_heat_states.current_rank ASC`)
+ORDER BY topic_heat_states.current_heat DESC,
+	topic_heat_states.current_effective_views DESC`)
 				.all() as Row[]
-		).map((row) => ({
+		).map((row, index) => ({
 			topicId: rowString(row, "topic_id"),
 			titleZh: rowString(row, "title_zh"),
 			titleEn: rowString(row, "title_en"),
@@ -1576,7 +1619,43 @@ ORDER BY topic_heat_states.current_rank ASC`)
 			velocityPerHour: rowNumber(row, "current_velocity_per_hour"),
 			heat: rowNumber(row, "current_heat"),
 			state: rowString(row, "state") as CurrentHotTopic["state"],
-			rank: rowNumber(row, "current_rank"),
+			rank: index + 1,
+		}));
+	}
+
+	listCurrentBreakoutTopics(): CurrentBreakoutTopic[] {
+		return (
+			this.#database
+				.prepare(`
+SELECT topics.id AS topic_id, topics.title_zh, topics.title_en,
+	metrics.effective_views, breakout.effective_reach_ratio,
+	breakout.reach_velocity_per_hour, breakout.breakout_heat
+FROM topic_breakout_metric_snapshots breakout
+JOIN topic_metric_snapshots metrics
+	ON metrics.topic_id = breakout.topic_id
+	AND metrics.observed_at = breakout.observed_at
+JOIN topics ON topics.id = breakout.topic_id
+LEFT JOIN topic_heat_states ON topic_heat_states.topic_id = breakout.topic_id
+WHERE topics.status = 'active'
+	AND (topic_heat_states.state IS NULL OR topic_heat_states.state != 'stopped')
+	AND breakout.observed_at = (
+		SELECT max(latest.observed_at)
+		FROM topic_breakout_metric_snapshots latest
+		WHERE latest.topic_id = breakout.topic_id
+	)
+ORDER BY breakout.breakout_heat DESC,
+	breakout.effective_reach_ratio DESC,
+	metrics.effective_views DESC`)
+				.all() as Row[]
+		).map((row, index) => ({
+			topicId: rowString(row, "topic_id"),
+			titleZh: rowString(row, "title_zh"),
+			titleEn: rowString(row, "title_en"),
+			effectiveViews: rowNumber(row, "effective_views"),
+			effectiveReachRatio: rowNumber(row, "effective_reach_ratio"),
+			reachVelocityPerHour: rowNumber(row, "reach_velocity_per_hour"),
+			breakoutHeat: rowNumber(row, "breakout_heat"),
+			rank: index + 1,
 		}));
 	}
 
@@ -1609,6 +1688,17 @@ ON CONFLICT(topic_id, observed_at) DO UPDATE SET
 	view_score = excluded.view_score,
 	velocity_score = excluded.velocity_score,
 	heat = excluded.heat, state = excluded.state, rank = excluded.rank`);
+		const insertBreakoutSnapshot = this.#database.prepare(`
+INSERT INTO topic_breakout_metric_snapshots(
+	topic_id, observed_at, effective_reach_ratio, reach_velocity_per_hour,
+	reach_score, reach_velocity_score, breakout_heat
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(topic_id, observed_at) DO UPDATE SET
+	effective_reach_ratio = excluded.effective_reach_ratio,
+	reach_velocity_per_hour = excluded.reach_velocity_per_hour,
+	reach_score = excluded.reach_score,
+	reach_velocity_score = excluded.reach_velocity_score,
+	breakout_heat = excluded.breakout_heat`);
 		const upsertState = this.#database.prepare(`
 INSERT INTO topic_heat_states(
 	topic_id, state, low_heat_streak, low_growth_streak,
@@ -1640,6 +1730,23 @@ ON CONFLICT(topic_id) DO UPDATE SET
 					result.state,
 					result.rank,
 				);
+				if (
+					result.effectiveReachRatio !== null &&
+					result.reachVelocityPerHour !== null &&
+					result.reachScore !== null &&
+					result.reachVelocityScore !== null &&
+					result.breakoutHeat !== null
+				) {
+					insertBreakoutSnapshot.run(
+						result.topicId,
+						result.observedAt,
+						result.effectiveReachRatio,
+						result.reachVelocityPerHour,
+						result.reachScore,
+						result.reachVelocityScore,
+						result.breakoutHeat,
+					);
+				}
 				upsertState.run(
 					result.topicId,
 					result.state,

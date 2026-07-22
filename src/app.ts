@@ -22,6 +22,29 @@ app.get("/news/hot-topics", (context) => {
 		database.close();
 	}
 });
+app.get("/news/breakout-topics", (context) => {
+	const database = new NewsDatabase();
+	try {
+		return context.json({
+			generatedAt: new Date().toISOString(),
+			topics: database.listCurrentBreakoutTopics(),
+		});
+	} finally {
+		database.close();
+	}
+});
+app.get("/news/leaderboards", (context) => {
+	const database = new NewsDatabase();
+	try {
+		return context.json({
+			generatedAt: new Date().toISOString(),
+			impact: database.listCurrentHotTopics(),
+			breakout: database.listCurrentBreakoutTopics(),
+		});
+	} finally {
+		database.close();
+	}
+});
 app.route("/", flue());
 
 export default app;

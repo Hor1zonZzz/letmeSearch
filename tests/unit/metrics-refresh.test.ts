@@ -81,12 +81,22 @@ describe("metrics refresh", () => {
 		database.seedOrganizations(ORGANIZATIONS);
 		const [account] = database.listEnabledAccounts();
 		if (!account) throw new Error("Expected account");
-		const first = database.upsertPost(
+		const firstPost = normalizeTwitterApiTweet(
+			rawTweet("metric-1", "Mon Jul 20 00:00:00 +0000 2026"),
+		);
+		database.recordAccountIngestSuccess(
 			account.id,
-			normalizeTwitterApiTweet(
-				rawTweet("metric-1", "Mon Jul 20 00:00:00 +0000 2026"),
-			),
-		).post;
+			firstPost.author,
+			firstPost.publishedAt,
+			"2026-07-20T01:00:00.000Z",
+		);
+		database.recordAccountIngestSuccess(
+			account.id,
+			{ ...firstPost.author, followersCount: 2_000_000 },
+			firstPost.publishedAt,
+			"2026-07-20T01:30:00.000Z",
+		);
+		const first = database.upsertPost(account.id, firstPost).post;
 		const second = database.upsertPost(
 			account.id,
 			normalizeTwitterApiTweet(
@@ -182,6 +192,8 @@ describe("metrics refresh", () => {
 					effectiveViews: 1_060_000,
 					velocityPerHour: 57_500,
 					heat: 1,
+					effectiveReachRatio: 1.06,
+					breakoutHeat: 1,
 					state: "ranked",
 					rank: 1,
 				},
@@ -193,7 +205,17 @@ describe("metrics refresh", () => {
 					rank: 1,
 				},
 			],
+			breakoutTopics: [
+				{
+					topicId: created.topicId,
+					effectiveReachRatio: 1.06,
+					breakoutHeat: 1,
+					rank: 1,
+				},
+			],
 		});
+		expect(ranked.topics[0]?.reachVelocityPerHour).toBeCloseTo(0.0575);
+		expect(ranked.breakoutTopics[0]?.reachVelocityPerHour).toBeCloseTo(0.0575);
 		expect(stopped).toMatchObject({
 			stoppedTopics: 1,
 			topics: [{ topicId: created.topicId, state: "stopped", rank: null }],

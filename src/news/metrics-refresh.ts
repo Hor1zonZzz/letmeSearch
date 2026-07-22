@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { NewsDatabase } from "./database";
-import { calculateTopicHeat } from "./heat";
+import { calculateTopicBreakoutHeat, calculateTopicHeat } from "./heat";
 import type {
+	CurrentBreakoutTopic,
 	CurrentHotTopic,
 	PostMetricSnapshotInput,
 	StoredTopicHeatState,
@@ -20,6 +21,9 @@ export type TopicMetricsResult = {
 	velocityPerHour: number;
 	growthRate: number | null;
 	heat: number;
+	effectiveReachRatio: number | null;
+	reachVelocityPerHour: number | null;
+	breakoutHeat: number | null;
 	state: TopicHeatState;
 	rank: number | null;
 };
@@ -30,6 +34,7 @@ export type MetricsRefreshStats = {
 	topicsCalculated: number;
 	stoppedTopics: number;
 	hotTopics: CurrentHotTopic[];
+	breakoutTopics: CurrentBreakoutTopic[];
 	topics: TopicMetricsResult[];
 	errors: Array<{ scope: string; message: string }>;
 };
@@ -180,6 +185,11 @@ export async function runMetricsRefresh(options: {
 				.listPreviousTopicMetrics()
 				.map((metric) => [metric.topicId, metric]),
 		);
+		const previousBreakoutMetrics = new Map(
+			options.database
+				.listPreviousTopicBreakoutMetrics()
+				.map((metric) => [metric.topicId, metric]),
+		);
 		const previousStates = new Map(
 			options.database
 				.listTopicHeatStates()
@@ -196,6 +206,13 @@ export async function runMetricsRefresh(options: {
 				const effective = effectiveViews(
 					topicPosts.flatMap(({ views }) => (views === null ? [] : [views])),
 				);
+				const reachRatios = topicPosts.flatMap(({ followersCount, views }) =>
+					views !== null && followersCount !== null && followersCount > 0
+						? [views / followersCount]
+						: [],
+				);
+				const effectiveReachRatio =
+					reachRatios.length > 0 ? effectiveViews(reachRatios) : null;
 				const allPostsRefreshed = topicPosts.every(
 					(post) => post.metricObservedAt === observedAt,
 				);
@@ -209,6 +226,21 @@ export async function runMetricsRefresh(options: {
 				const gained = previous
 					? Math.max(effective - previous.effectiveViews, 0)
 					: 0;
+				const previousBreakout = previousBreakoutMetrics.get(topicId);
+				const reachElapsedHours = previousBreakout
+					? Math.max(
+							(nowMs - new Date(previousBreakout.observedAt).getTime()) /
+								3_600_000,
+							0,
+						)
+					: 0;
+				const reachGained =
+					effectiveReachRatio !== null && previousBreakout
+						? Math.max(
+								effectiveReachRatio - previousBreakout.effectiveReachRatio,
+								0,
+							)
+						: 0;
 				return {
 					topicId,
 					effectiveViews: effective,
@@ -217,6 +249,13 @@ export async function runMetricsRefresh(options: {
 						previous && previous.effectiveViews > 0 && allPostsRefreshed
 							? gained / previous.effectiveViews
 							: null,
+					effectiveReachRatio,
+					reachVelocityPerHour:
+						effectiveReachRatio === null
+							? null
+							: reachElapsedHours > 0
+								? reachGained / reachElapsedHours
+								: 0,
 					allPostsExpired: topicPosts.every(
 						(post) =>
 							nowMs - new Date(post.publishedAt).getTime() >=
@@ -227,10 +266,27 @@ export async function runMetricsRefresh(options: {
 		const scores = new Map(
 			calculateTopicHeat(aggregates).map((score) => [score.topicId, score]),
 		);
+		const breakoutScores = new Map(
+			calculateTopicBreakoutHeat(
+				aggregates.flatMap((aggregate) =>
+					aggregate.effectiveReachRatio !== null &&
+					aggregate.reachVelocityPerHour !== null
+						? [
+								{
+									topicId: aggregate.topicId,
+									effectiveReachRatio: aggregate.effectiveReachRatio,
+									reachVelocityPerHour: aggregate.reachVelocityPerHour,
+								},
+							]
+						: [],
+				),
+			).map((score) => [score.topicId, score]),
+		);
 		const results: TopicMetricResultInput[] = aggregates.map((aggregate) => {
 			const score = scores.get(aggregate.topicId);
 			if (!score)
 				throw new Error(`Missing heat score for topic ${aggregate.topicId}`);
+			const breakoutScore = breakoutScores.get(aggregate.topicId);
 			const transition = currentState(previousStates.get(aggregate.topicId), {
 				effectiveViews: aggregate.effectiveViews,
 				heat: score.heat,
@@ -247,6 +303,11 @@ export async function runMetricsRefresh(options: {
 				viewScore: score.viewScore,
 				velocityScore: score.velocityScore,
 				heat: score.heat,
+				effectiveReachRatio: aggregate.effectiveReachRatio,
+				reachVelocityPerHour: aggregate.reachVelocityPerHour,
+				reachScore: breakoutScore?.reachScore ?? null,
+				reachVelocityScore: breakoutScore?.reachVelocityScore ?? null,
+				breakoutHeat: breakoutScore?.breakoutHeat ?? null,
 				state: transition.state,
 				rank: null,
 				lowHeatStreak: transition.lowHeatStreak,
@@ -268,12 +329,16 @@ export async function runMetricsRefresh(options: {
 			topicsCalculated: results.length,
 			stoppedTopics: results.filter(({ state }) => state === "stopped").length,
 			hotTopics: options.database.listCurrentHotTopics(),
+			breakoutTopics: options.database.listCurrentBreakoutTopics(),
 			topics: results.map((result) => ({
 				topicId: result.topicId,
 				effectiveViews: result.effectiveViews,
 				velocityPerHour: result.velocityPerHour,
 				growthRate: result.growthRate,
 				heat: result.heat,
+				effectiveReachRatio: result.effectiveReachRatio,
+				reachVelocityPerHour: result.reachVelocityPerHour,
+				breakoutHeat: result.breakoutHeat,
 				state: result.state,
 				rank: result.rank,
 			})),

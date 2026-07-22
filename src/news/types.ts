@@ -178,12 +178,19 @@ export type TopicMetricPost = {
 	publishedAt: string;
 	views: number | null;
 	metricObservedAt: string | null;
+	followersCount: number | null;
 };
 
 export type PreviousTopicMetric = {
 	topicId: string;
 	observedAt: string;
 	effectiveViews: number;
+};
+
+export type PreviousTopicBreakoutMetric = {
+	topicId: string;
+	observedAt: string;
+	effectiveReachRatio: number;
 };
 
 export type StoredTopicHeatState = {
@@ -204,6 +211,17 @@ export type CurrentHotTopic = {
 	rank: number;
 };
 
+export type CurrentBreakoutTopic = {
+	topicId: string;
+	titleZh: string;
+	titleEn: string;
+	effectiveViews: number;
+	effectiveReachRatio: number;
+	reachVelocityPerHour: number;
+	breakoutHeat: number;
+	rank: number;
+};
+
 export type TopicMetricResultInput = {
 	topicId: string;
 	observedAt: string;
@@ -213,6 +231,11 @@ export type TopicMetricResultInput = {
 	viewScore: number;
 	velocityScore: number;
 	heat: number;
+	effectiveReachRatio: number | null;
+	reachVelocityPerHour: number | null;
+	reachScore: number | null;
+	reachVelocityScore: number | null;
+	breakoutHeat: number | null;
 	state: TopicHeatState;
 	rank: number | null;
 	lowHeatStreak: number;

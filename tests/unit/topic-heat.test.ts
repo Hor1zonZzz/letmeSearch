@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { calculateTopicHeat } from "../../src/news/heat";
+import {
+	calculateTopicBreakoutHeat,
+	calculateTopicHeat,
+} from "../../src/news/heat";
 
 describe("topic heat calculation", () => {
 	it("combines logarithmic view and velocity percentiles with equal weight", () => {
@@ -25,6 +28,36 @@ describe("topic heat calculation", () => {
 			{ topicId: "leader", viewScore: 1, velocityScore: 1, heat: 1 },
 			{ topicId: "middle", viewScore: 0.5, velocityScore: 0.5, heat: 0.5 },
 			{ topicId: "trailer", viewScore: 0, velocityScore: 0, heat: 0 },
+		]);
+	});
+
+	it("ranks breakout reach independently from absolute audience size", () => {
+		const scores = calculateTopicBreakoutHeat([
+			{
+				topicId: "small-account-breakout",
+				effectiveReachRatio: 4,
+				reachVelocityPerHour: 0.5,
+			},
+			{
+				topicId: "large-account-post",
+				effectiveReachRatio: 0.04,
+				reachVelocityPerHour: 0.001,
+			},
+		]);
+
+		expect(scores).toEqual([
+			{
+				topicId: "small-account-breakout",
+				reachScore: 1,
+				reachVelocityScore: 1,
+				breakoutHeat: 1,
+			},
+			{
+				topicId: "large-account-post",
+				reachScore: 0,
+				reachVelocityScore: 0,
+				breakoutHeat: 0,
+			},
 		]);
 	});
 
