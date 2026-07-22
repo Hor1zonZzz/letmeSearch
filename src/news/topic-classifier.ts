@@ -4,7 +4,10 @@ import {
 	topicPostAnalysisBatchSchema,
 	type StructuredTopicPostAnalysis,
 } from "./schemas";
-import { topicClassificationPrompt } from "./topic-prompts";
+import {
+	topicClassificationPostRef,
+	topicClassificationPrompt,
+} from "./topic-prompts";
 import type { PostForTriage, PostTopicAnalysis } from "./types";
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
@@ -77,30 +80,32 @@ function validateCoverage(
 	posts: PostForTriage[],
 	analyses: StructuredTopicPostAnalysis[],
 ): void {
-	const expected = new Set(posts.map((post) => post.id));
+	const expected = new Set(
+		posts.map((_, index) => topicClassificationPostRef(index)),
+	);
 	const seen = new Set<string>();
 	for (const analysis of analyses) {
-		if (!expected.has(analysis.postId)) {
+		if (!expected.has(analysis.postRef)) {
 			throw new Error(
-				`Topic classification returned unknown postId: ${analysis.postId}`,
+				`Topic classification returned unknown postRef: ${analysis.postRef}`,
 			);
 		}
-		if (seen.has(analysis.postId)) {
+		if (seen.has(analysis.postRef)) {
 			throw new Error(
-				`Topic classification returned duplicate postId: ${analysis.postId}`,
+				`Topic classification returned duplicate postRef: ${analysis.postRef}`,
 			);
 		}
 		if (analysis.decision === "ignore" && analysis.topicCandidate !== null) {
 			throw new Error(
-				`Ignored post ${analysis.postId} returned a topic candidate`,
+				`Ignored post ${analysis.postRef} returned a topic candidate`,
 			);
 		}
 		if (analysis.decision !== "ignore" && analysis.topicCandidate === null) {
 			throw new Error(
-				`Tracked post ${analysis.postId} omitted its topic candidate`,
+				`Tracked post ${analysis.postRef} omitted its topic candidate`,
 			);
 		}
-		seen.add(analysis.postId);
+		seen.add(analysis.postRef);
 	}
 	if (seen.size !== expected.size) {
 		throw new Error(
@@ -114,19 +119,28 @@ export function normalizeTopicPostAnalyses(
 	analyses: StructuredTopicPostAnalysis[],
 ): PostTopicAnalysis[] {
 	validateCoverage(posts, analyses);
-	return analyses.map((analysis) => ({
-		postId: analysis.postId,
-		decision: analysis.decision,
-		isImportant: analysis.decision === "important",
-		domain: analysis.domain,
-		organizationIds: [...new Set(analysis.organizationIds)],
-		unknownOrganizationCandidates: [
-			...new Set(analysis.unknownOrganizationCandidates),
-		],
-		topicCandidate: analysis.topicCandidate,
-		reason: analysis.reason,
-		confidence: analysis.confidence,
-	}));
+	const postIdsByRef = new Map(
+		posts.map((post, index) => [topicClassificationPostRef(index), post.id]),
+	);
+	return analyses.map((analysis) => {
+		const postId = postIdsByRef.get(analysis.postRef);
+		if (!postId) {
+			throw new Error(`Missing Post mapping for ${analysis.postRef}`);
+		}
+		return {
+			postId,
+			decision: analysis.decision,
+			isImportant: analysis.decision === "important",
+			domain: analysis.domain,
+			organizationIds: [...new Set(analysis.organizationIds)],
+			unknownOrganizationCandidates: [
+				...new Set(analysis.unknownOrganizationCandidates),
+			],
+			topicCandidate: analysis.topicCandidate,
+			reason: analysis.reason,
+			confidence: analysis.confidence,
+		};
+	});
 }
 
 export async function classifyTopicPosts(

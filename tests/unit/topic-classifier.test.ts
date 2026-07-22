@@ -4,7 +4,7 @@ import type { PostForTriage, TopicCandidate } from "../../src/news/types";
 
 function post(): PostForTriage {
 	return {
-		id: "post-1",
+		id: "7b559db5-500b-4bef-a55a-ae80fe8f58cd",
 		xPostId: "x-1",
 		accountId: "account-1",
 		eventId: null,
@@ -41,9 +41,11 @@ describe("topic classifier", () => {
 	it("returns a derived important flag and sends the complete article", async () => {
 		const request = vi.fn(async (prompt: string) => {
 			expect(prompt).toContain("Complete article body");
+			expect(prompt).toContain('"postRef":"p1"');
+			expect(prompt).not.toContain("7b559db5-500b-4bef-a55a-ae80fe8f58cd");
 			return modelResponse({
 				analyses: [{
-					postId: "post-1",
+					postRef: "p1",
 					decision: "important",
 					domain: "ai_technology",
 					organizationIds: ["anthropic", "anthropic"],
@@ -58,6 +60,7 @@ describe("topic classifier", () => {
 		const [analysis] = await classifyTopicPosts([post()], request);
 
 		expect(analysis).toMatchObject({
+			postId: "7b559db5-500b-4bef-a55a-ae80fe8f58cd",
 			decision: "important",
 			isImportant: true,
 			organizationIds: ["anthropic"],
@@ -68,7 +71,7 @@ describe("topic classifier", () => {
 	it("rejects ignored posts that return a topic", async () => {
 		await expect(classifyTopicPosts([post()], async () => modelResponse({
 			analyses: [{
-				postId: "post-1",
+				postRef: "p1",
 				decision: "ignore",
 				domain: "other",
 				organizationIds: [],

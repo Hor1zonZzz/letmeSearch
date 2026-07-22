@@ -9,9 +9,13 @@ function replyContext(post: PostForTriage): Record<string, unknown> | null {
 	};
 }
 
+export function topicClassificationPostRef(index: number): string {
+	return `p${index + 1}`;
+}
+
 export function topicClassificationPrompt(posts: PostForTriage[]): string {
-	const payload = posts.map((post) => ({
-		postId: post.id,
+	const payload = posts.map((post, index) => ({
+		postRef: topicClassificationPostRef(index),
 		xPostId: post.xPostId,
 		postType: post.postType,
 		publisherHandle: post.accountHandle,
@@ -37,10 +41,10 @@ export function topicClassificationPrompt(posts: PostForTriage[]): string {
 	}));
 	return `Classify every supplied X post for a Chinese-English AI news topic system.
 
-Return exactly this JSON shape, with one object per postId:
-{"analyses":[{"postId":"...","decision":"important","domain":"ai_technology","organizationIds":["anthropic"],"unknownOrganizationCandidates":[],"topicCandidate":{"titleZh":"...","titleEn":"...","summaryZh":"...","summaryEn":"...","type":"product_update"},"reason":"...","confidence":0.9}]}
+Return exactly this JSON shape, with one object per postRef:
+{"analyses":[{"postRef":"p1","decision":"important","domain":"ai_technology","organizationIds":["anthropic"],"unknownOrganizationCandidates":[],"topicCandidate":{"titleZh":"...","titleEn":"...","summaryZh":"...","summaryEn":"...","type":"product_update"},"reason":"...","confidence":0.9}]}
 
-Do not add or omit fields. topicCandidate.type must be one of model_release, product_release, product_update, open_source, research, partnership, funding, acquisition, ai_policy, correction, shutdown, or other. decision must be important, observe, or ignore:
+Copy each short postRef exactly as supplied. Return every postRef exactly once; never return xPostId or invent an identifier. Do not add or omit fields. topicCandidate.type must be one of model_release, product_release, product_update, open_source, research, partnership, funding, acquisition, ai_policy, correction, shutdown, or other. decision must be important, observe, or ignore:
 - important: a concrete AI event such as a model/product release, material update, open-source release, research result, partnership, financing, acquisition, AI policy with direct industry impact, correction, or shutdown.
 - observe: AI or technology content that may become noteworthy but is not yet a clearly important event.
 - ignore: unrelated content, routine social chatter, lifestyle content, pure politics without direct AI-industry impact, or content with no useful AI/technology relevance.
