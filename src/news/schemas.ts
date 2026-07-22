@@ -78,6 +78,38 @@ export const topicResolutionSchema = v.object({
 	reason: boundedText(1, 500),
 });
 
+export const toolTopicResolutionSchema = v.variant("decision", [
+	v.object({
+		decision: v.literal("attach"),
+		topicId: boundedText(1, 100),
+		expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
+		searchId: boundedText(1, 100),
+		confidence: v.pipe(v.number(), v.minValue(0), v.maxValue(1)),
+		reason: boundedText(1, 300),
+	}),
+	v.object({
+		decision: v.literal("create"),
+		successfulSearchIds: v.pipe(
+			v.array(boundedText(1, 100)),
+			v.minLength(1),
+			v.maxLength(3),
+		),
+		confidence: v.pipe(v.number(), v.minValue(0), v.maxValue(1)),
+		reason: boundedText(1, 300),
+	}),
+	v.object({
+		decision: v.literal("defer"),
+		reasonCode: v.picklist([
+			"search_failed",
+			"ambiguous",
+			"budget_exhausted",
+			"low_confidence",
+		]),
+		confidence: v.pipe(v.number(), v.minValue(0), v.maxValue(1)),
+		reason: boundedText(1, 300),
+	}),
+]);
+
 export const reportDraftSchema = v.object({
 	headline: boundedText(1, 200),
 	summary: boundedText(1, 2_000),
@@ -94,3 +126,6 @@ export type PostAnalysisBatch = v.InferOutput<typeof postAnalysisBatchSchema>;
 export type StructuredReportDraft = v.InferOutput<typeof reportDraftSchema>;
 export type StructuredTopicPostAnalysis = v.InferOutput<typeof topicPostAnalysisSchema>;
 export type StructuredTopicResolution = v.InferOutput<typeof topicResolutionSchema>;
+export type StructuredToolTopicResolution = v.InferOutput<
+	typeof toolTopicResolutionSchema
+>;
