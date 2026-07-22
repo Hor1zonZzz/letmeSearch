@@ -211,6 +211,11 @@ function excerpt(value: string, maximum = 300): string {
 	return value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`;
 }
 
+type ScoredTopicMatch = {
+	score: number;
+	match: TopicSearchMatch;
+};
+
 function searchScore(options: {
 	strategy: TopicSearchStrategy;
 	strongReferenceCount: number;
@@ -232,6 +237,26 @@ function searchScore(options: {
 		default:
 			throw new Error(`Unsupported Topic search strategy: ${options.strategy}`);
 	}
+}
+
+function relevantSearchPool(
+	scored: ScoredTopicMatch[],
+	strategy: TopicSearchStrategy,
+	hasStrongReferences: boolean,
+): ScoredTopicMatch[] {
+	if (strategy === "subject") {
+		return scored.filter(({ match }) => match.lexicalScore >= 0.12);
+	}
+	if (strategy === "strong_reference" && hasStrongReferences) {
+		return scored.filter(({ match }) => match.strongReferenceMatches.length > 0);
+	}
+	if (strategy === "organization") {
+		const overlapping = scored.filter(
+			({ match }) => match.organizationRelation !== "disjoint",
+		);
+		return overlapping.length > 0 ? overlapping : scored;
+	}
+	return scored;
 }
 
 export function searchActiveTopics(options: {
@@ -331,7 +356,11 @@ export function searchActiveTopics(options: {
 			},
 		};
 	});
-	const ordered = scored.sort(
+	const ordered = relevantSearchPool(
+		scored,
+		options.input.strategy,
+		subjectReferences.size > 0,
+	).sort(
 		(left, right) =>
 			right.score - left.score || left.match.topicId.localeCompare(right.match.topicId),
 	);

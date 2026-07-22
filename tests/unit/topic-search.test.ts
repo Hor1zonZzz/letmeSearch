@@ -116,6 +116,19 @@ describe("active Topic search", () => {
 		});
 		expect(result.matches[0]?.sourceTime.nearestDeltaHours).toBe(22);
 
+		const focusedResult = searchActiveTopics({
+			database,
+			subject,
+			input: { focus: null, strategy: "subject", detail: "compact", limit: 1 },
+		});
+		expect(focusedResult).toMatchObject({
+			eligibleTopicCount: 1,
+			truncated: false,
+		});
+		expect(focusedResult.matches[0]?.titleEn).toBe(
+			"Microsoft OpenAI Security Program",
+		);
+
 		const quotedResult = searchActiveTopics({
 			database,
 			subject: {
