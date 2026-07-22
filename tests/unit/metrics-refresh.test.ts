@@ -44,6 +44,30 @@ function analysis(postId: string): PostTopicAnalysis {
 	};
 }
 
+function commitTopic(
+	database: NewsDatabase,
+	analyses: PostTopicAnalysis[],
+	now: string,
+) {
+	for (const item of analyses) {
+		database.savePostTopicAnalysis(item, 1, now);
+		database.queuePostTopicResolution(item.postId, 2, now);
+	}
+	const topic = analyses[0]?.topicCandidate;
+	if (!topic) throw new Error("Expected Topic candidate");
+	return database.commitTopicBatch({
+		postIds: analyses.map(({ postId }) => postId),
+		decision: "create",
+		targetTopicId: null,
+		expectedTopicRevision: null,
+		topic,
+		searchTrace: { searches: [] },
+		modelRunId: "metric-test",
+		resolutionVersion: 2,
+		now,
+	});
+}
+
 describe("metrics refresh", () => {
 	const databases: NewsDatabase[] = [];
 	afterEach(() => {
@@ -69,19 +93,11 @@ describe("metrics refresh", () => {
 				rawTweet("metric-2", "Mon Jul 20 00:00:00 +0000 2026"),
 			),
 		).post;
-		const created = database.commitPostTopicAnalysis({
-			analysis: analysis(first.id),
-			analysisVersion: 1,
-			existingTopicId: null,
-			now: "2026-07-20T01:00:00.000Z",
-		});
-		if (!created.topicId) throw new Error("Expected topic");
-		database.commitPostTopicAnalysis({
-			analysis: analysis(second.id),
-			analysisVersion: 1,
-			existingTopicId: created.topicId,
-			now: "2026-07-20T01:00:00.000Z",
-		});
+		const created = commitTopic(
+			database,
+			[analysis(first.id), analysis(second.id)],
+			"2026-07-20T01:00:00.000Z",
+		);
 		let refresh = 0;
 		const client = {
 			async fetchTweetMetrics() {
@@ -203,19 +219,11 @@ describe("metrics refresh", () => {
 				rawTweet("recent", "Mon Jul 20 00:00:00 +0000 2026"),
 			),
 		).post;
-		const created = database.commitPostTopicAnalysis({
-			analysis: analysis(oldPost.id),
-			analysisVersion: 1,
-			existingTopicId: null,
-			now: "2026-07-20T01:00:00.000Z",
-		});
-		if (!created.topicId) throw new Error("Expected topic");
-		database.commitPostTopicAnalysis({
-			analysis: analysis(recentPost.id),
-			analysisVersion: 1,
-			existingTopicId: created.topicId,
-			now: "2026-07-20T01:00:00.000Z",
-		});
+		commitTopic(
+			database,
+			[analysis(oldPost.id), analysis(recentPost.id)],
+			"2026-07-20T01:00:00.000Z",
+		);
 		const client = {
 			async fetchTweetMetrics() {
 				return [
@@ -273,26 +281,23 @@ describe("metrics refresh", () => {
 				rawTweet("leader", "Mon Jul 20 00:00:00 +0000 2026"),
 			),
 		).post;
-		const weakTopic = database.commitPostTopicAnalysis({
-			analysis: analysis(weakPost.id),
-			analysisVersion: 1,
-			existingTopicId: null,
-			now: "2026-07-20T01:00:00.000Z",
-		}).topicId;
-		const leaderTopic = database.commitPostTopicAnalysis({
-			analysis: {
+		const weakTopic = commitTopic(
+			database,
+			[analysis(weakPost.id)],
+			"2026-07-20T01:00:00.000Z",
+		).topicId;
+		const leaderTopic = commitTopic(
+			database,
+			[{
 				...analysis(leaderPost.id),
 				topicCandidate: {
 					...analysis(leaderPost.id).topicCandidate!,
 					titleZh: "另一个领先 Topic",
 					titleEn: "Another Leading Topic",
 				},
-			},
-			analysisVersion: 1,
-			existingTopicId: null,
-			now: "2026-07-20T01:00:00.000Z",
-		}).topicId;
-		if (!weakTopic || !leaderTopic) throw new Error("Expected topics");
+			}],
+			"2026-07-20T01:00:00.000Z",
+		).topicId;
 		let refresh = 0;
 		const client = {
 			async fetchTweetMetrics() {

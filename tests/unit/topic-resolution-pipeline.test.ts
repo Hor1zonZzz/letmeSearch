@@ -112,7 +112,10 @@ describe("Topic resolution pipeline", () => {
 			postsFailed: 0,
 		});
 		expect(attemptedIds).toEqual(["x-2", "x-1"]);
-		expect(database.listActiveTopics("2026-07-19T00:00:00.000Z")).toEqual([
+		expect(database.listTopicsForSearch(
+			"2026-07-19T00:00:00.000Z",
+			"2026-07-23T00:00:00.000Z",
+		)).toEqual([
 			expect.objectContaining({ revision: 0 }),
 		]);
 	});

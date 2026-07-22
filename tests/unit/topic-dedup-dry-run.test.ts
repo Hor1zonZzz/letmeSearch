@@ -38,6 +38,24 @@ function analysis(postId: string): PostTopicAnalysis {
 	};
 }
 
+function commitTopic(database: NewsDatabase, item: PostTopicAnalysis): void {
+	const now = "2026-07-22T11:00:00.000Z";
+	database.savePostTopicAnalysis(item, 1, now);
+	database.queuePostTopicResolution(item.postId, 2, now);
+	if (!item.topicCandidate) throw new Error("Expected Topic candidate");
+	database.commitTopicBatch({
+		postIds: [item.postId],
+		decision: "create",
+		targetTopicId: null,
+		expectedTopicRevision: null,
+		topic: item.topicCandidate,
+		searchTrace: { searches: [] },
+		modelRunId: "topic-dedup-test",
+		resolutionVersion: 2,
+		now,
+	});
+}
+
 describe("Topic duplicate dry run", () => {
 	const databases: NewsDatabase[] = [];
 	afterEach(() => {
@@ -58,14 +76,9 @@ describe("Topic duplicate dry run", () => {
 				account.id,
 				normalizeTwitterApiTweet(rawTweet(id, hour)),
 			).post;
-			database.commitPostTopicAnalysis({
-				analysis: analysis(post.id),
-				analysisVersion: 1,
-				existingTopicId: null,
-				now: "2026-07-22T11:00:00.000Z",
-			});
+			commitTopic(database, analysis(post.id));
 		}
-		const before = database.listActiveTopics("2026-07-19T00:00:00.000Z");
+		const before = database.listTopicsForSearch("2026-07-19T00:00:00.000Z", "2026-07-23T00:00:00.000Z");
 
 		const report = createTopicDedupDryRun({
 			database,
@@ -79,6 +92,6 @@ describe("Topic duplicate dry run", () => {
 				overlapOrganizationIds: ["openai"],
 			}),
 		]);
-		expect(database.listActiveTopics("2026-07-19T00:00:00.000Z")).toEqual(before);
+		expect(database.listTopicsForSearch("2026-07-19T00:00:00.000Z", "2026-07-23T00:00:00.000Z")).toEqual(before);
 	});
 });

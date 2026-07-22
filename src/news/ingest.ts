@@ -23,7 +23,6 @@ export type NewsIngestStats = {
 	accountsSucceeded: number;
 	fetchedPosts: number;
 	newPosts: number;
-	ignoredPosts: number;
 	errors: NewsIngestError[];
 };
 
@@ -74,7 +73,6 @@ async function ingestAccount(
 		accountsSucceeded: 0,
 		fetchedPosts: 0,
 		newPosts: 0,
-		ignoredPosts: 0,
 		errors: [],
 	};
 	const boundary = account.ingestBoundaryPostAt;
@@ -122,12 +120,7 @@ async function ingestAccount(
 					}
 
 					const stored = database.upsertPost(account.id, normalized);
-					if (stored.isNew) {
-						result.newPosts += 1;
-						if (stored.post.processingStatus === "ignored") {
-							result.ignoredPosts += 1;
-						}
-					}
+					if (stored.isNew) result.newPosts += 1;
 				} catch (error) {
 					hadNormalizationError = true;
 					result.errors.push({
@@ -200,7 +193,6 @@ export async function ingestNews(
 			accountsSucceeded: stats.accountsSucceeded + account.accountsSucceeded,
 			fetchedPosts: stats.fetchedPosts + account.fetchedPosts,
 			newPosts: stats.newPosts + account.newPosts,
-			ignoredPosts: stats.ignoredPosts + account.ignoredPosts,
 			errors: [...stats.errors, ...account.errors],
 		}),
 		{
@@ -208,7 +200,6 @@ export async function ingestNews(
 			accountsSucceeded: 0,
 			fetchedPosts: 0,
 			newPosts: 0,
-			ignoredPosts: 0,
 			errors: [],
 		},
 	);

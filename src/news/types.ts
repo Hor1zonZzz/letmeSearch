@@ -1,7 +1,4 @@
 export type PostType = "original" | "quote" | "reply" | "repost";
-export type ProcessingStatus = "pending" | "ignored" | "processed" | "failed";
-export type EventCategory = "ai_tech" | "ai_funding";
-
 export type AccountProfile = {
 	xUserId: string;
 	handle: string;
@@ -40,7 +37,6 @@ export type StoredPost = {
 	id: string;
 	xPostId: string;
 	accountId: string;
-	eventId: string | null;
 	postType: PostType;
 	content: string;
 	publishedAt: string;
@@ -48,16 +44,10 @@ export type StoredPost = {
 	tweetUrl: string;
 	quotedXPostId: string | null;
 	quotedPost: Record<string, unknown> | null;
-	processingStatus: ProcessingStatus;
 };
 
-export type PostForAnalysis = StoredPost & {
-	accountHandle: string;
-	accountOrganization: string;
-};
-
-export type TriageDecision = "important" | "ignore";
-export type TriageDomain =
+type TriageDecision = "important" | "ignore";
+type TriageDomain =
 	| "ai_technology"
 	| "ai_policy"
 	| "politics"
@@ -107,8 +97,6 @@ export type PostTopicAnalysis = {
 	confidence: number;
 };
 
-export type TopicResolutionStatus = "pending" | "resolved" | "failed";
-
 export type PendingTopicResolution = {
 	postId: string;
 	xPostId: string;
@@ -133,7 +121,7 @@ export type TopicResolutionBatchPost = PendingTopicResolution & {
 	postRef: string;
 };
 
-export type TopicSearchSourcePost = {
+type TopicSearchSourcePost = {
 	xPostId: string;
 	publishedAt: string;
 	publisherHandle: string;
@@ -230,41 +218,4 @@ export type TopicMetricResultInput = {
 	lowHeatStreak: number;
 	lowGrowthStreak: number;
 	stoppedAt: string | null;
-};
-
-export type EventFact = {
-	text: string;
-	sourcePostIds: string[];
-};
-
-export type NewsEvent = {
-	id: string;
-	category: EventCategory;
-	canonicalTitle: string;
-	organization: string;
-	subject: string;
-	action: string;
-	eventFingerprint: string;
-	facts: EventFact[];
-	status: "active" | "updated" | "archived";
-	firstSeenAt: string;
-	lastUpdatedAt: string;
-	currentReportVersion: number;
-	lockVersion: number;
-};
-
-export type EventSourcePost = {
-	id: string;
-	xPostId: string;
-	handle: string;
-	content: string;
-	publishedAt: string;
-	tweetUrl: string;
-};
-
-export type ReportDraft = {
-	headline: string;
-	summary: string;
-	keyFacts: string[];
-	changeSummary: string;
 };

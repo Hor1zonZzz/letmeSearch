@@ -76,11 +76,9 @@ describe("news ingestion", () => {
 			accountsSucceeded: 1,
 			fetchedPosts: 4,
 			newPosts: 4,
-			ignoredPosts: 2,
 			errors: [],
 		});
 		for (const id of ["1", "2", "3", "4"]) expect(db.hasPost(id)).toBe(true);
-		expect(db.listPostsForAnalysis()).toHaveLength(2);
 		expect(client.fetchLatestTweetsPage).toHaveBeenCalledOnce();
 		expect(client.fetchLatestTweetsPage).toHaveBeenCalledWith("OpenAI", {
 			cursor: null,

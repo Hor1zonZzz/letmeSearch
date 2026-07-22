@@ -1,15 +1,12 @@
 {
   "name": "flue",
   "version": "1.0.0",
-  "description": "A minimal Flue hello-world agent",
+  "description": "Official AI news ingestion, Topic resolution, and heat ranking",
   "scripts": {
     "dev": "PORT=${PORT:-3107} NEWS_SCHEDULER_ENABLED=true flue dev --target node",
     "build": "flue build --target node",
     "start": "PORT=${PORT:-3107} NEWS_SCHEDULER_ENABLED=true node --env-file-if-exists=.env dist/server.mjs",
-    "agent": "flue run hello-world --target node",
-    "workflow": "flue run summarize --target node",
     "search": "flue run agentic-search --target node",
-    "news:pull": "flue run official-news-pull --target node --input '{\"maxPostsPerAccount\":5}'",
     "news:ingest": "tsx --env-file-if-exists=.env src/commands/news-ingest.ts",
     "news:triage": "flue run workflow:news-triage --target node --input '{}'",
     "news:resolve": "flue run news-topic-resolve --target node --input '{}'",

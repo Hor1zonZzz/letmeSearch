@@ -42,6 +42,28 @@ function analysis(
 	};
 }
 
+
+function commitTopic(
+	database: NewsDatabase,
+	item: PostTopicAnalysis,
+	now: string,
+): void {
+	database.savePostTopicAnalysis(item, 1, now);
+	database.queuePostTopicResolution(item.postId, 2, now);
+	if (!item.topicCandidate) throw new Error("Expected Topic candidate");
+	database.commitTopicBatch({
+		postIds: [item.postId],
+		decision: "create",
+		targetTopicId: null,
+		expectedTopicRevision: null,
+		topic: item.topicCandidate,
+		searchTrace: { searches: [] },
+		modelRunId: "topic-search-test",
+		resolutionVersion: 2,
+		now,
+	});
+}
+
 describe("active Topic search", () => {
 	const databases: NewsDatabase[] = [];
 	afterEach(() => {
@@ -75,18 +97,16 @@ describe("active Topic search", () => {
 				"Anthropic publishes unrelated research",
 			)),
 		).post;
-		database.commitPostTopicAnalysis({
-			analysis: analysis(matching.id, ["microsoft"], "Microsoft OpenAI Security Program"),
-			analysisVersion: 1,
-			existingTopicId: null,
-			now: "2026-07-22T10:00:00.000Z",
-		});
-		database.commitPostTopicAnalysis({
-			analysis: analysis(unrelated.id, ["anthropic"], "Anthropic Research"),
-			analysisVersion: 1,
-			existingTopicId: null,
-			now: "2026-07-22T10:00:00.000Z",
-		});
+		commitTopic(
+			database,
+			analysis(matching.id, ["microsoft"], "Microsoft OpenAI Security Program"),
+			"2026-07-22T10:00:00.000Z",
+		);
+		commitTopic(
+			database,
+			analysis(unrelated.id, ["anthropic"], "Anthropic Research"),
+			"2026-07-22T10:00:00.000Z",
+		);
 		const subject: TopicSearchSubject = {
 			postId: "candidate",
 			xPostId: "candidate-x",

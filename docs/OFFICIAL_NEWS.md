@@ -37,12 +37,10 @@
 
 ## 数据边界
 
-- `data/flue.db`：Flue 的 Topic 分类、Topic 合并、报告生成 Agent 会话和 Workflow Run；
-  旧版 `news:pull` 中的直接分类请求仍不创建 Agent 会话。
-- `data/news.db`：账号、推文、事件和完整稿件版本。
-- `data/reports/<event-id>.md`：每个事件当前最新稿的可再生导出文件。
+- `data/flue.db`：Flue 的 Topic 分类、Topic 合并 Agent 会话和 Workflow Run；
+- `data/news.db`：账号、推文、Topic、指标快照和热榜状态。
 
-业务 SQLite 是稿件的事实源。本地 Markdown 写入失败时，数据库版本仍会保留；后续运行会再次导出尚未同步的版本。
+业务 SQLite 是新闻 Topic 和指标的事实源。
 
 ## 配置
 
@@ -96,8 +94,8 @@ curl http://localhost:3107/news/hot-topics
 采集按 UTC `0 0,4,8,12,15-23 * * *` 运行，即 00:00、04:00、08:00、12:00，
 并在 15:00–23:00 每小时运行。每次采集完成后，Server 会通过 Flue `invoke()`
 提交一次独立的 `news-triage` Workflow Run；分类完成后该 Workflow 会立即提交
-`news-topic-resolve` Run。Topic Resolver 另按 `*/10 * * * *` 每 10 分钟执行恢复调度，
-处理此前技术失败的剩余 Post。Croner 使用 `protect: true` 防止
+`news-topic-resolve` Run。系统不再单独定时运行 Resolver；技术失败会在下一轮抓取后
+自动重试，也可以手工运行 `npm run news:resolve`。Croner 使用 `protect: true` 防止
 同一 Cron 回调重叠，业务数据库作业锁防止分类和 Resolver 实例重叠。
 
 直接运行 `npm run news:ingest` 或 `npm run news:triage` 时不会额外启动调度器。
@@ -149,8 +147,7 @@ Agent 只看到 `p1`、`p2` 和 `t1` 等 session 短引用；数据库 UUID、se
 一条 Post 由 `topic_posts.post_id` 主键保证最多属于一个 Topic；一个 Topic 可以原子接收
 一条或多条 Post。每次成功写入及搜索轨迹继续记录到 `topic_resolution_events`。
 
-系统仍以 Topic 为热度和排名单位。多个账号讨论同一事件时只关联一个 Topic；此阶段
-暂不为新 Topic 生成 Markdown。
+系统以 Topic 为热度和排名单位。多个账号讨论同一事件时只关联一个 Topic。
 
 ## 指标与热榜
 
@@ -190,41 +187,11 @@ npm run --silent news:topics:dry-run > data/topic-dedup-review.json
 命令按 72 小时时间窗、事件类型、组织重叠、双语主题相似度和强引用生成建议，不写数据库、
 不自动合并。输出应由人工核验后再执行未来的显式 merge 操作。
 
-## 分类与报告
-
-现有端到端 Workflow 可继续手工运行：
-
-```bash
-npm run news:pull
-```
-
-默认每个账号读取最近 5 条推文，再执行分类和报告。也可以直接调用 Workflow：
-
-```bash
-npx flue run official-news-pull --target node \
-  --input '{"maxPostsPerAccount":5}'
-```
-
-Workflow 的结果包含账号成功数、拉取数、新推文数、忽略数、事件数、报告版本数、文件导出数和局部错误。
-
-## 旧版 `news:pull` 处理规则
-
-1. TwitterAPI.io 返回的 X ID 始终按字符串保存。
-2. 采集 CLI 将原创、Quote、回复和普通转发全部入库；回复和普通转发在当前分类状态中直接标记为 `ignored`。
-3. 原创和 Quote 按 X 账号分组，各账号通过一次直接 DeepSeek JSON 请求并发判断是否包含重要事件；分类不创建 Agent session。
-4. 每个账号的分类结果独立校验。单个账号失败时，其帖子标记为 `failed` 并留待下次 Workflow 运行重试，不影响其他账号。
-5. 代码根据组织、主体和动作生成事件指纹。
-6. 同一事实的重复来源只补充来源 ID，不创建新报告版本。
-7. 新事件生成 v1；新增事实生成后续完整版本。
-8. 分类响应先经过 JSON 解析、Valibot Schema 和帖子 ID 完整性校验；LLM 不直接修改数据库。
-9. 分类请求全部并发，事件合并、报告生成和 SQLite 写入仍按帖子发布时间顺序串行执行。
-
 ## 当前限制
 
 - 这是一次性 REST 拉取，不是实时 WebSocket 监听。
 - 新账号首次只保留最新 20 条；后续采集通过 cursor 翻页到上次成功边界。
 - 已采集互动快照并计算 Topic 热度，但暂不分析传播路径或圈层扩散。
-- 首版一条推文只归入一个主要事件。
+- 一条推文只归入一个 Topic。
 - `news:triage` 分类与 `news-topic-resolve` Topic 合并分别进入独立 Flue Agent session；
-  旧版 `news:pull` 的直接分类请求仍不记录逐请求会话。两条新流程的错误都会记录到业务
-  数据库和运行输出。
+  两条流程的错误都会记录到业务数据库和运行输出。

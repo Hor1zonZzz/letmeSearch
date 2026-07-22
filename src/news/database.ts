@@ -6,15 +6,10 @@ import type { OrganizationId } from "./organizations";
 import type {
 	AccountProfile,
 	CurrentHotTopic,
-	EventCategory,
-	EventFact,
-	EventSourcePost,
 	MonitoredAccount,
-	NewsEvent,
 	NewsTopic,
 	NormalizedPost,
 	PendingTopicResolution,
-	PostForAnalysis,
 	PostForMetricRefresh,
 	PostForTriage,
 	PostMetricSnapshotInput,
@@ -26,7 +21,6 @@ import type {
 	TopicMetricPost,
 	TopicMetricResultInput,
 	TopicSearchDocument,
-	TriageDecision,
 } from "./types";
 
 type AccountSeed = {
@@ -61,45 +55,6 @@ export type PostArticleInput = {
 	contents: unknown[] | null;
 	rawPayload: Record<string, unknown> | null;
 	fetchedAt: string;
-};
-
-type ReportCommit = {
-	markdown: string;
-	changeSummary: string;
-	eventSnapshot: unknown;
-	sourcePostIds: string[];
-	createdByRunId: string;
-	filePath: string;
-};
-
-export type CommitEventChangeInput = {
-	eventId: string;
-	expectedEventId: string | null;
-	expectedLockVersion: number | null;
-	postId: string;
-	analysis: unknown;
-	category: EventCategory;
-	canonicalTitle: string;
-	organization: string;
-	subject: string;
-	action: string;
-	eventFingerprint: string;
-	facts: EventFact[];
-	now: string;
-	report: ReportCommit | null;
-};
-
-export type CommitEventChangeResult = {
-	eventId: string;
-	reportVersion: number | null;
-	filePath: string | null;
-};
-
-export type PendingReportExport = {
-	eventId: string;
-	version: number;
-	markdown: string;
-	filePath: string;
 };
 
 type Row = Record<string, unknown>;
@@ -567,6 +522,26 @@ CREATE INDEX post_topic_resolutions_queue_idx
 	ON post_topic_resolutions(status, next_retry_at, updated_at);
 `,
 	},
+	{
+		version: 10,
+		name: "remove-legacy-event-reports",
+		sql: `
+DROP TRIGGER IF EXISTS event_reports_immutable_content;
+DROP INDEX IF EXISTS reports_unsynced_idx;
+DROP TABLE IF EXISTS event_reports;
+DROP INDEX IF EXISTS posts_event_id_idx;
+DROP INDEX IF EXISTS posts_processing_status_idx;
+UPDATE posts SET event_id = NULL;
+ALTER TABLE posts DROP COLUMN event_id;
+ALTER TABLE posts DROP COLUMN processing_status;
+ALTER TABLE posts DROP COLUMN analysis_json;
+ALTER TABLE posts DROP COLUMN analysis_version;
+ALTER TABLE posts DROP COLUMN processing_error;
+ALTER TABLE posts DROP COLUMN analyzed_at;
+DROP INDEX IF EXISTS events_updated_idx;
+DROP TABLE IF EXISTS events;
+`,
+	},
 ];
 
 function rowString(row: Row, key: string): string {
@@ -617,7 +592,6 @@ function mapPost(row: Row): StoredPost {
 		id: rowString(row, "id"),
 		xPostId: rowString(row, "x_post_id"),
 		accountId: rowString(row, "account_id"),
-		eventId: nullableString(row, "event_id"),
 		postType: rowString(row, "post_type") as StoredPost["postType"],
 		content: rowString(row, "content"),
 		publishedAt: rowString(row, "published_at"),
@@ -628,36 +602,6 @@ function mapPost(row: Row): StoredPost {
 			row.quoted_post_json,
 			null,
 		),
-		processingStatus: rowString(
-			row,
-			"processing_status",
-		) as StoredPost["processingStatus"],
-	};
-}
-
-function mapPostForAnalysis(row: Row): PostForAnalysis {
-	return {
-		...mapPost(row),
-		accountHandle: rowString(row, "account_handle"),
-		accountOrganization: rowString(row, "account_organization"),
-	};
-}
-
-function mapEvent(row: Row): NewsEvent {
-	return {
-		id: rowString(row, "id"),
-		category: rowString(row, "category") as NewsEvent["category"],
-		canonicalTitle: rowString(row, "canonical_title"),
-		organization: rowString(row, "organization"),
-		subject: rowString(row, "subject"),
-		action: rowString(row, "action"),
-		eventFingerprint: rowString(row, "event_fingerprint"),
-		facts: parseJson<EventFact[]>(row.facts_json, []),
-		status: rowString(row, "status") as NewsEvent["status"],
-		firstSeenAt: rowString(row, "first_seen_at"),
-		lastUpdatedAt: rowString(row, "last_updated_at"),
-		currentReportVersion: rowNumber(row, "current_report_version"),
-		lockVersion: rowNumber(row, "lock_version"),
 	};
 }
 
@@ -798,43 +742,6 @@ ORDER BY handle COLLATE NOCASE`)
 		).map(mapAccount);
 	}
 
-	recordAccountPullSuccess(
-		accountId: string,
-		profile: AccountProfile | null,
-		lastSeenPostAt: string | null,
-		now: string,
-	): void {
-		this.#database
-			.prepare(`
-UPDATE monitored_accounts SET
-	x_user_id = COALESCE(?, x_user_id),
-	display_name = COALESCE(?, display_name),
-	followers_count = COALESCE(?, followers_count),
-	raw_profile_json = COALESCE(?, raw_profile_json),
-	monitoring_status = 'active',
-	last_seen_post_at = CASE
-		WHEN ? IS NULL THEN last_seen_post_at
-		WHEN last_seen_post_at IS NULL OR ? > last_seen_post_at THEN ?
-		ELSE last_seen_post_at
-	END,
-	last_pulled_at = ?,
-	last_error = NULL,
-	updated_at = ?
-WHERE id = ?`)
-			.run(
-				profile?.xUserId ?? null,
-				profile?.displayName ?? null,
-				profile?.followersCount ?? null,
-				profile ? JSON.stringify(profile.rawPayload) : null,
-				lastSeenPostAt,
-				lastSeenPostAt,
-				lastSeenPostAt,
-				now,
-				now,
-				accountId,
-			);
-	}
-
 	recordAccountIngestSuccess(
 		accountId: string,
 		profile: AccountProfile | null,
@@ -895,24 +802,21 @@ UPDATE monitored_accounts SET monitoring_status = 'error', last_error = ?, updat
 	upsertPost(accountId: string, post: NormalizedPost): UpsertPostResult {
 		const existing = this.#database
 			.prepare(`
-SELECT id, x_post_id, account_id, event_id, post_type, content, published_at, observed_at,
-	tweet_url, quoted_x_post_id, quoted_post_json, processing_status
+SELECT id, x_post_id, account_id, post_type, content, published_at, observed_at,
+	tweet_url, quoted_x_post_id, quoted_post_json
 FROM posts WHERE x_post_id = ?`)
 			.get(post.xPostId) as Row | undefined;
 		if (existing) return { post: mapPost(existing), isNew: false };
 
 		const id = randomUUID();
 		const now = new Date().toISOString();
-		const processingStatus = ["reply", "repost"].includes(post.postType)
-			? "ignored"
-			: "pending";
 		this.#database
 			.prepare(`
 INSERT INTO posts(
 	id, x_post_id, account_id, post_type, content, published_at, observed_at, tweet_url,
-	quoted_x_post_id, quoted_post_json, urls_json, media_json, processing_status,
+	quoted_x_post_id, quoted_post_json, urls_json, media_json,
 	raw_payload_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 			.run(
 				id,
 				post.xPostId,
@@ -926,7 +830,6 @@ INSERT INTO posts(
 				post.quotedPost ? JSON.stringify(post.quotedPost) : null,
 				JSON.stringify(post.urls),
 				JSON.stringify(post.mediaUrls),
-				processingStatus,
 				JSON.stringify(post.rawPayload),
 				now,
 				now,
@@ -936,7 +839,6 @@ INSERT INTO posts(
 				id,
 				xPostId: post.xPostId,
 				accountId,
-				eventId: null,
 				postType: post.postType,
 				content: post.content,
 				publishedAt: post.publishedAt,
@@ -944,51 +846,9 @@ INSERT INTO posts(
 				tweetUrl: post.tweetUrl,
 				quotedXPostId: post.quotedXPostId,
 				quotedPost: post.quotedPost,
-				processingStatus,
 			},
 			isNew: true,
 		};
-	}
-
-	listPostsForAnalysis(limit = 100): PostForAnalysis[] {
-		return (
-			this.#database
-				.prepare(`
-SELECT posts.id, posts.x_post_id, posts.account_id, posts.event_id, posts.post_type,
-	posts.content, posts.published_at, posts.observed_at, posts.tweet_url,
-	posts.quoted_x_post_id, posts.quoted_post_json, posts.processing_status,
-	monitored_accounts.handle AS account_handle,
-	monitored_accounts.organization AS account_organization
-FROM posts
-JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
-WHERE posts.processing_status IN ('pending', 'failed')
-	AND posts.post_type IN ('original', 'quote')
-ORDER BY posts.published_at ASC
-LIMIT ?`)
-				.all(limit) as Row[]
-		).map(mapPostForAnalysis);
-	}
-
-	markPostIgnored(
-		postId: string,
-		analysis: unknown,
-		analysisVersion: number,
-		now: string,
-	): void {
-		this.#database
-			.prepare(`
-UPDATE posts SET processing_status = 'ignored', analysis_json = ?, analysis_version = ?,
-	processing_error = NULL, analyzed_at = ?, updated_at = ? WHERE id = ?
-`)
-			.run(JSON.stringify(analysis), analysisVersion, now, now, postId);
-	}
-
-	markPostFailed(postId: string, error: string, now: string): void {
-		this.#database
-			.prepare(`
-UPDATE posts SET processing_status = 'failed', processing_error = ?, updated_at = ? WHERE id = ?
-`)
-			.run(error.slice(0, 500), now, postId);
 	}
 
 	listPostsForArticleHydration(
@@ -1062,9 +922,9 @@ ON CONFLICT(post_id) DO UPDATE SET
 	): PostForTriage[] {
 		const rows = this.#database
 			.prepare(`
-SELECT posts.id, posts.x_post_id, posts.account_id, posts.event_id, posts.post_type,
+SELECT posts.id, posts.x_post_id, posts.account_id, posts.post_type,
 	posts.content, posts.published_at, posts.observed_at, posts.tweet_url,
-	posts.quoted_x_post_id, posts.quoted_post_json, posts.processing_status,
+	posts.quoted_x_post_id, posts.quoted_post_json,
 	posts.raw_payload_json, monitored_accounts.handle AS account_handle,
 	monitored_accounts.display_name AS account_display_name,
 	post_articles.title AS article_title,
@@ -1385,243 +1245,6 @@ ORDER BY posts.published_at DESC, posts.x_post_id DESC`)
 		);
 	}
 
-	listActiveTopics(since: string): NewsTopic[] {
-		const rows = this.#database
-			.prepare(`
-SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
-	topics.summary_en, topics.topic_type, topics.status, topics.revision,
-	topics.first_seen_at, topics.last_updated_at,
-	topic_organizations.organization_id
-FROM topics
-LEFT JOIN topic_organizations ON topic_organizations.topic_id = topics.id
-WHERE topics.status = 'active' AND EXISTS (
-	SELECT 1
-	FROM topic_posts recent_topic_posts
-	JOIN posts recent_posts ON recent_posts.id = recent_topic_posts.post_id
-	WHERE recent_topic_posts.topic_id = topics.id
-		AND recent_posts.published_at >= ?
-)
-ORDER BY (
-	SELECT max(latest_posts.published_at)
-	FROM topic_posts latest_topic_posts
-	JOIN posts latest_posts ON latest_posts.id = latest_topic_posts.post_id
-	WHERE latest_topic_posts.topic_id = topics.id
-) DESC`)
-			.all(since) as Row[];
-		const topics = new Map<string, NewsTopic>();
-		for (const row of rows) {
-			const id = rowString(row, "id");
-			const existing = topics.get(id);
-			const organizationId = nullableString(row, "organization_id");
-			if (existing) {
-				if (organizationId) existing.organizationIds.push(organizationId);
-				continue;
-			}
-			topics.set(id, {
-				id,
-				titleZh: rowString(row, "title_zh"),
-				titleEn: rowString(row, "title_en"),
-				summaryZh: rowString(row, "summary_zh"),
-				summaryEn: rowString(row, "summary_en"),
-				type: rowString(row, "topic_type") as NewsTopic["type"],
-				status: rowString(row, "status") as NewsTopic["status"],
-				revision: rowNumber(row, "revision"),
-				organizationIds: organizationId ? [organizationId] : [],
-				firstSeenAt: rowString(row, "first_seen_at"),
-				lastUpdatedAt: rowString(row, "last_updated_at"),
-			});
-		}
-		return [...topics.values()];
-	}
-
-	createTopicForPost(input: {
-		candidate: TopicCandidate;
-		organizationIds: string[];
-		postId: string;
-		decision: TriageDecision;
-		now: string;
-	}): string {
-		const topicId = randomUUID();
-		this.#database.exec("BEGIN IMMEDIATE");
-		try {
-			this.#database
-				.prepare(`
-INSERT INTO topics(
-	id, title_zh, title_en, summary_zh, summary_en, topic_type,
-	status, first_seen_at, last_updated_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
-				.run(
-					topicId,
-					input.candidate.titleZh,
-					input.candidate.titleEn,
-					input.candidate.summaryZh,
-					input.candidate.summaryEn,
-					input.candidate.type,
-					input.now,
-					input.now,
-					input.now,
-					input.now,
-				);
-			for (const organizationId of new Set(input.organizationIds)) {
-				this.#database
-					.prepare(`
-INSERT INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
-					.run(topicId, organizationId);
-			}
-			this.#database
-				.prepare(`
-INSERT INTO topic_posts(post_id, topic_id, decision, added_at) VALUES (?, ?, ?, ?)`)
-				.run(input.postId, topicId, input.decision, input.now);
-			this.#database.exec("COMMIT");
-			return topicId;
-		} catch (error) {
-			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
-			throw error;
-		}
-	}
-
-	attachPostToTopic(input: {
-		topicId: string;
-		postId: string;
-		decision: TriageDecision;
-		organizationIds: string[];
-		now: string;
-	}): void {
-		this.#database.exec("BEGIN IMMEDIATE");
-		try {
-			this.#database
-				.prepare(`
-INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(post_id) DO UPDATE SET
-	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
-				.run(input.postId, input.topicId, input.decision, input.now);
-			for (const organizationId of new Set(input.organizationIds)) {
-				this.#database
-					.prepare(`
-INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
-					.run(input.topicId, organizationId);
-			}
-			this.#database
-				.prepare(`
-UPDATE topics
-SET last_updated_at = ?, updated_at = ?, revision = revision + 1
-WHERE id = ?`)
-				.run(input.now, input.now, input.topicId);
-			this.#database.exec("COMMIT");
-		} catch (error) {
-			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
-			throw error;
-		}
-	}
-
-	commitPostTopicAnalysis(input: {
-		analysis: PostTopicAnalysis;
-		analysisVersion: number;
-		existingTopicId: string | null;
-		now: string;
-	}): { topicId: string | null; topicCreated: boolean } {
-		this.#database.exec("BEGIN IMMEDIATE");
-		try {
-			const previousAnalysis = this.#database
-				.prepare(`
-SELECT analysis_version FROM post_topic_analyses WHERE post_id = ?`)
-				.get(input.analysis.postId) as Row | undefined;
-			if (
-				previousAnalysis &&
-				rowNumber(previousAnalysis, "analysis_version") > input.analysisVersion
-			) {
-				throw new Error("Refusing to overwrite a newer topic analysis");
-			}
-			const previousTopic = this.#database
-				.prepare(`
-SELECT topic_id FROM topic_posts WHERE post_id = ?`)
-				.get(input.analysis.postId) as Row | undefined;
-			const previousTopicId = previousTopic
-				? rowString(previousTopic, "topic_id")
-				: null;
-			let topicId: string | null = null;
-			let topicCreated = false;
-			if (input.analysis.decision === "ignore") {
-				this.#database
-					.prepare("DELETE FROM topic_posts WHERE post_id = ?")
-					.run(input.analysis.postId);
-			} else {
-				const candidate = input.analysis.topicCandidate;
-				if (!candidate)
-					throw new Error("Tracked analysis has no topic candidate");
-				topicId = input.existingTopicId ?? randomUUID();
-				if (input.existingTopicId) {
-					const updated = this.#database
-						.prepare(`
-UPDATE topics
-SET last_updated_at = ?, updated_at = ?, revision = revision + 1
-WHERE id = ?`)
-						.run(input.now, input.now, topicId);
-					if (updated.changes !== 1)
-						throw new Error(`Topic not found: ${topicId}`);
-				} else {
-					this.#database
-						.prepare(`
-INSERT INTO topics(
-	id, title_zh, title_en, summary_zh, summary_en, topic_type,
-	status, first_seen_at, last_updated_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
-						.run(
-							topicId,
-							candidate.titleZh,
-							candidate.titleEn,
-							candidate.summaryZh,
-							candidate.summaryEn,
-							candidate.type,
-							input.now,
-							input.now,
-							input.now,
-							input.now,
-						);
-					topicCreated = true;
-				}
-				for (const organizationId of new Set(input.analysis.organizationIds)) {
-					this.#database
-						.prepare(`
-INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
-						.run(topicId, organizationId);
-				}
-				this.#database
-					.prepare(`
-INSERT INTO topic_posts(post_id, topic_id, decision, added_at)
-VALUES (?, ?, ?, ?)
-ON CONFLICT(post_id) DO UPDATE SET
-	topic_id = excluded.topic_id, decision = excluded.decision, added_at = excluded.added_at`)
-					.run(
-						input.analysis.postId,
-						topicId,
-						input.analysis.decision,
-						input.now,
-					);
-			}
-			if (previousTopicId && previousTopicId !== topicId) {
-				this.#database
-					.prepare(`
-UPDATE topics SET status = 'archived', updated_at = ?
-WHERE id = ? AND NOT EXISTS (
-	SELECT 1 FROM topic_posts WHERE topic_posts.topic_id = topics.id
-)`)
-					.run(input.now, previousTopicId);
-			}
-			this.savePostTopicAnalysis(
-				input.analysis,
-				input.analysisVersion,
-				input.now,
-			);
-			this.#database.exec("COMMIT");
-			return { topicId, topicCreated };
-		} catch (error) {
-			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
-			throw error;
-		}
-	}
-
 	commitTopicBatch(input: {
 		postIds: string[];
 		decision: "attach" | "create";
@@ -1673,8 +1296,11 @@ WHERE post_id IN (SELECT value FROM json_each(?)) LIMIT 1`)
 					organizationIds.add(organizationId);
 				return rowString(row, "published_at");
 			});
-			const firstPublishedAt = [...publishedAt].sort()[0];
-			const lastPublishedAt = [...publishedAt].sort().at(-1);
+			const chronologicalPublishedAt = [...publishedAt].sort((left, right) =>
+				left.localeCompare(right),
+			);
+			const firstPublishedAt = chronologicalPublishedAt[0];
+			const lastPublishedAt = chronologicalPublishedAt.at(-1);
 			if (!firstPublishedAt || !lastPublishedAt) {
 				throw new Error("Topic assignment has no publication time");
 			}
@@ -1758,6 +1384,9 @@ WHERE id = ? AND status = 'active' AND revision = ?`)
 INSERT OR IGNORE INTO topic_organizations(topic_id, organization_id) VALUES (?, ?)`)
 					.run(topicId, organizationId);
 			}
+			const auditReason = input.decision === "attach"
+				? "batch_agent_attach"
+				: "batch_agent_create";
 			for (const postId of postIds) {
 				this.#database
 					.prepare(`
@@ -1774,7 +1403,7 @@ WHERE post_id = ?`)
 					.run(
 						input.decision,
 						topicId,
-						`batch_agent_${input.decision}`,
+						auditReason,
 						input.resolutionVersion,
 						input.now,
 						input.now,
@@ -1792,7 +1421,7 @@ INSERT INTO topic_resolution_events(
 						input.decision,
 						topicId,
 						input.resolutionVersion,
-						`batch_agent_${input.decision}`,
+						auditReason,
 						JSON.stringify(input.searchTrace),
 						input.modelRunId,
 						input.now,
@@ -2031,212 +1660,5 @@ ON CONFLICT(topic_id) DO UPDATE SET
 		}
 	}
 
-	findEventByFingerprint(fingerprint: string): NewsEvent | null {
-		const row = this.#database
-			.prepare(`
-SELECT id, category, canonical_title, organization, subject, action, event_fingerprint,
-	facts_json, status, first_seen_at, last_updated_at, current_report_version, lock_version
-FROM events WHERE event_fingerprint = ?`)
-			.get(fingerprint) as Row | undefined;
-		return row ? mapEvent(row) : null;
-	}
 
-	getCurrentReportMarkdown(eventId: string, version: number): string | null {
-		if (version < 1) return null;
-		const row = this.#database
-			.prepare(
-				"SELECT markdown FROM event_reports WHERE event_id = ? AND version = ?",
-			)
-			.get(eventId, version) as Row | undefined;
-		return row ? rowString(row, "markdown") : null;
-	}
-
-	getPostSource(postId: string): EventSourcePost {
-		const row = this.#database
-			.prepare(`
-SELECT posts.id, posts.x_post_id, monitored_accounts.handle, posts.content,
-	posts.published_at, posts.tweet_url
-FROM posts
-JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
-WHERE posts.id = ?`)
-			.get(postId) as Row | undefined;
-		if (!row) throw new Error(`Post not found: ${postId}`);
-		return {
-			id: rowString(row, "id"),
-			xPostId: rowString(row, "x_post_id"),
-			handle: rowString(row, "handle"),
-			content: rowString(row, "content"),
-			publishedAt: rowString(row, "published_at"),
-			tweetUrl: rowString(row, "tweet_url"),
-		};
-	}
-
-	listEventSourcePosts(eventId: string): EventSourcePost[] {
-		return (
-			this.#database
-				.prepare(`
-SELECT posts.id, posts.x_post_id, monitored_accounts.handle, posts.content,
-	posts.published_at, posts.tweet_url
-FROM posts
-JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
-WHERE posts.event_id = ?
-ORDER BY posts.published_at ASC`)
-				.all(eventId) as Row[]
-		).map((row) => ({
-			id: rowString(row, "id"),
-			xPostId: rowString(row, "x_post_id"),
-			handle: rowString(row, "handle"),
-			content: rowString(row, "content"),
-			publishedAt: rowString(row, "published_at"),
-			tweetUrl: rowString(row, "tweet_url"),
-		}));
-	}
-
-	commitEventChange(input: CommitEventChangeInput): CommitEventChangeResult {
-		this.#database.exec("BEGIN IMMEDIATE");
-		try {
-			const current = this.findEventByFingerprint(input.eventFingerprint);
-			if (input.expectedEventId === null) {
-				if (current)
-					throw new Error("Event was created concurrently; retry the post");
-				if (!input.report)
-					throw new Error("A new event must create its first report");
-				this.#database
-					.prepare(`
-INSERT INTO events(
-	id, category, canonical_title, organization, subject, action, event_fingerprint,
-	facts_json, status, first_seen_at, last_updated_at, current_report_version,
-	lock_version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 1, 0, ?, ?)`)
-					.run(
-						input.eventId,
-						input.category,
-						input.canonicalTitle,
-						input.organization,
-						input.subject,
-						input.action,
-						input.eventFingerprint,
-						JSON.stringify(input.facts),
-						input.now,
-						input.now,
-						input.now,
-						input.now,
-					);
-			} else {
-				if (
-					!current ||
-					current.id !== input.expectedEventId ||
-					current.lockVersion !== input.expectedLockVersion
-				) {
-					throw new Error("Event version changed concurrently; retry the post");
-				}
-				const nextReportVersion = input.report
-					? current.currentReportVersion + 1
-					: current.currentReportVersion;
-				const update = this.#database
-					.prepare(`
-UPDATE events SET
-	category = ?, canonical_title = ?, organization = ?, subject = ?, action = ?,
-	facts_json = ?, status = ?, last_updated_at = ?, current_report_version = ?,
-	lock_version = lock_version + 1, updated_at = ?
-WHERE id = ? AND lock_version = ?`)
-					.run(
-						input.category,
-						input.canonicalTitle,
-						input.organization,
-						input.subject,
-						input.action,
-						JSON.stringify(input.facts),
-						input.report ? "updated" : current.status,
-						input.now,
-						nextReportVersion,
-						input.now,
-						current.id,
-						current.lockVersion,
-					);
-				if (Number(update.changes) !== 1)
-					throw new Error("Failed to acquire event version lock");
-			}
-
-			this.#database
-				.prepare(`
-UPDATE posts SET event_id = ?, processing_status = 'processed', analysis_json = ?,
-	analysis_version = 1, processing_error = NULL, analyzed_at = ?, updated_at = ?
-WHERE id = ?`)
-				.run(
-					input.eventId,
-					JSON.stringify(input.analysis),
-					input.now,
-					input.now,
-					input.postId,
-				);
-
-			let reportVersion: number | null = null;
-			if (input.report) {
-				const baseVersion = current?.currentReportVersion ?? 0;
-				reportVersion = baseVersion + 1;
-				this.#database
-					.prepare(`
-INSERT INTO event_reports(
-	event_id, version, base_report_version, markdown, change_summary,
-	event_snapshot_json, source_post_ids_json, created_by_run_id,
-	file_path, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-					.run(
-						input.eventId,
-						reportVersion,
-						baseVersion,
-						input.report.markdown,
-						input.report.changeSummary,
-						JSON.stringify(input.report.eventSnapshot),
-						JSON.stringify(input.report.sourcePostIds),
-						input.report.createdByRunId,
-						input.report.filePath,
-						input.now,
-					);
-			}
-			this.#database.exec("COMMIT");
-			return {
-				eventId: input.eventId,
-				reportVersion,
-				filePath: input.report?.filePath ?? null,
-			};
-		} catch (error) {
-			if (this.#database.isTransaction) this.#database.exec("ROLLBACK");
-			throw error;
-		}
-	}
-
-	listPendingReportExports(): PendingReportExport[] {
-		return (
-			this.#database
-				.prepare(`
-SELECT event_id, version, markdown, file_path
-FROM event_reports
-WHERE file_synced_at IS NULL
-ORDER BY created_at ASC`)
-				.all() as Row[]
-		).map((row) => ({
-			eventId: rowString(row, "event_id"),
-			version: rowNumber(row, "version"),
-			markdown: rowString(row, "markdown"),
-			filePath: rowString(row, "file_path"),
-		}));
-	}
-
-	markReportFileSynced(eventId: string, version: number, now: string): void {
-		this.#database
-			.prepare(`
-UPDATE event_reports SET file_synced_at = ?, file_sync_error = NULL WHERE event_id = ? AND version = ?
-`)
-			.run(now, eventId, version);
-	}
-
-	markReportFileFailed(eventId: string, version: number, error: string): void {
-		this.#database
-			.prepare(`
-UPDATE event_reports SET file_sync_error = ? WHERE event_id = ? AND version = ?
-`)
-			.run(error.slice(0, 500), eventId, version);
-	}
 }

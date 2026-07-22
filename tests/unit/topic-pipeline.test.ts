@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewsDatabase } from "../../src/news/database";
 import { normalizeTwitterApiTweet } from "../../src/news/normalizer";
-import type {
-	PostForTriage,
-	PostTopicAnalysis,
-} from "../../src/news/types";
+import type { PostForTriage, PostTopicAnalysis } from "../../src/news/types";
 import {
 	runTopicBacklog,
 	runTopicPipeline,
@@ -105,12 +102,10 @@ describe("topic pipeline", () => {
 			postsAttachedToTopics: 0,
 			errors: [],
 		});
-		expect(database.listActiveTopics("2026-07-15T00:00:00.000Z")).toEqual([]);
-		expect(database.listPendingTopicResolutions(
-			10,
-			1,
-			"2026-07-22T11:00:00.000Z",
-		)).toHaveLength(2);
+		expect(database.listTopicsForSearch("2026-07-15T00:00:00.000Z", "2026-07-23T00:00:00.000Z")).toEqual([]);
+		expect(
+			database.listPendingTopicResolutions(10, 1, "2026-07-22T11:00:00.000Z"),
+		).toHaveLength(2);
 		expect(database.listPostsForTopicAnalysis()).toEqual([]);
 		expect(classifier).toHaveBeenCalledOnce();
 		expect(classifier.mock.calls[0]?.[0].map((post) => post.xPostId)).toEqual([
@@ -174,17 +169,27 @@ describe("topic pipeline", () => {
 				rawTweet("old", "Wed Jul 01 09:00:00 +0000 2026"),
 			),
 		).post;
-		database.commitPostTopicAnalysis({
-			analysis: {
-				...analysis(oldPost.id),
-				organizationIds: ["anthropic"],
-			},
-			analysisVersion: 1,
-			existingTopicId: null,
-			now: "2026-07-22T11:00:00.000Z",
+		const item = {
+			...analysis(oldPost.id),
+			organizationIds: ["anthropic"],
+		};
+		const now = "2026-07-22T11:00:00.000Z";
+		database.savePostTopicAnalysis(item, 1, now);
+		database.queuePostTopicResolution(item.postId, 2, now);
+		if (!item.topicCandidate) throw new Error("Expected Topic candidate");
+		database.commitTopicBatch({
+			postIds: [item.postId],
+			decision: "create",
+			targetTopicId: null,
+			expectedTopicRevision: null,
+			topic: item.topicCandidate,
+			searchTrace: { searches: [] },
+			modelRunId: "topic-pipeline-test",
+			resolutionVersion: 2,
+			now,
 		});
 
-		expect(database.listActiveTopics("2026-07-19T11:00:00.000Z")).toEqual([]);
+		expect(database.listTopicsForSearch("2026-07-19T11:00:00.000Z", "2026-07-23T00:00:00.000Z")).toEqual([]);
 	});
 
 	it("prevents overlapping topic backlog jobs", async () => {
