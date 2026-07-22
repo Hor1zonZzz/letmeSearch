@@ -124,14 +124,23 @@ function collectStrongReferences(
 	}
 }
 
+export function extractStrongReferences(
+	rawPayload: Record<string, unknown>,
+	quotedXPostId: string | null = null,
+): string[] {
+	const references = new Set<string>();
+	if (quotedXPostId) references.add(`quoted_tweet:${quotedXPostId}`);
+	collectStrongReferences(rawPayload, references);
+	return [...references].sort();
+}
+
 export function buildTopicSearchSubject(
 	resolution: PendingTopicResolution,
 ): TopicSearchSubject {
-	const references = new Set<string>();
-	if (resolution.quotedXPostId) {
-		references.add(`quoted_tweet:${resolution.quotedXPostId}`);
-	}
-	collectStrongReferences(resolution.rawPayload, references);
+	const strongReferences = extractStrongReferences(
+		resolution.rawPayload,
+		resolution.quotedXPostId,
+	);
 	return {
 		postId: resolution.postId,
 		xPostId: resolution.xPostId,
@@ -143,7 +152,7 @@ export function buildTopicSearchSubject(
 		type: resolution.topicCandidate.type,
 		organizationIds: resolution.organizationIds,
 		unknownOrganizationNames: resolution.unknownOrganizationCandidates,
-		strongReferences: [...references].sort(),
+		strongReferences,
 	};
 }
 
