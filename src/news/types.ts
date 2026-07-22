@@ -117,11 +117,25 @@ export type PendingTopicResolution = {
 	postId: string;
 	xPostId: string;
 	publishedAt: string;
+	quotedXPostId: string | null;
+	rawPayload: Record<string, unknown>;
 	organizationIds: string[];
 	unknownOrganizationCandidates: string[];
 	topicCandidate: TopicCandidate;
 	attemptCount: number;
 	resolutionVersion: number;
+};
+
+export type TopicSearchSourcePost = {
+	xPostId: string;
+	publishedAt: string;
+	publisherHandle: string;
+	content: string;
+	rawPayload: Record<string, unknown>;
+};
+
+export type TopicSearchDocument = NewsTopic & {
+	sourcePosts: TopicSearchSourcePost[];
 };
 
 export type NewsTopic = TopicCandidate & {

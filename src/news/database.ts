@@ -24,6 +24,7 @@ import type {
 	TopicCandidate,
 	TopicMetricPost,
 	TopicMetricResultInput,
+	TopicSearchDocument,
 	TriageDecision,
 } from "./types";
 
@@ -973,6 +974,7 @@ ON CONFLICT(post_id) DO UPDATE SET
 	): PendingTopicResolution[] {
 		const rows = this.#database.prepare(`
 SELECT resolutions.post_id, posts.x_post_id, posts.published_at,
+	posts.quoted_x_post_id, posts.raw_payload_json,
 	analyses.organization_ids_json, analyses.unknown_organizations_json,
 	analyses.topic_candidate_json, resolutions.attempt_count,
 	resolutions.resolution_version
@@ -997,6 +999,8 @@ LIMIT ?`).all(resolutionVersion, now, limit) as Row[];
 			postId: rowString(row, "post_id"),
 			xPostId: rowString(row, "x_post_id"),
 			publishedAt: rowString(row, "published_at"),
+			quotedXPostId: nullableString(row, "quoted_x_post_id"),
+			rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json, {}),
 			organizationIds: parseJson<string[]>(row.organization_ids_json, []),
 			unknownOrganizationCandidates: parseJson<string[]>(
 				row.unknown_organizations_json,
@@ -1078,6 +1082,69 @@ ON CONFLICT(post_id) DO UPDATE SET
 	updated_at = excluded.updated_at
 WHERE post_topic_analyses.analysis_version <= excluded.analysis_version`)
 			.run(postId, error.slice(0, 500), analysisVersion, now, now);
+	}
+
+	listTopicsForSearch(from: string, to: string): TopicSearchDocument[] {
+		const rows = this.#database.prepare(`
+SELECT topics.id, topics.title_zh, topics.title_en, topics.summary_zh,
+	topics.summary_en, topics.topic_type, topics.status, topics.revision,
+	topics.first_seen_at, topics.last_updated_at,
+	topic_organizations.organization_id,
+	posts.id AS post_id, posts.x_post_id, posts.published_at,
+	posts.content, posts.raw_payload_json,
+	monitored_accounts.handle AS publisher_handle
+FROM topics
+JOIN topic_posts ON topic_posts.topic_id = topics.id
+JOIN posts ON posts.id = topic_posts.post_id
+JOIN monitored_accounts ON monitored_accounts.id = posts.account_id
+LEFT JOIN topic_organizations ON topic_organizations.topic_id = topics.id
+WHERE topics.status = 'active' AND posts.published_at BETWEEN ? AND ?
+ORDER BY posts.published_at DESC, posts.x_post_id DESC`)
+			.all(from, to) as Row[];
+		const documents = new Map<
+			string,
+			TopicSearchDocument & { organizationSet: Set<string>; postIds: Set<string> }
+		>();
+		for (const row of rows) {
+			const topicId = rowString(row, "id");
+			let document = documents.get(topicId);
+			if (!document) {
+				document = {
+					id: topicId,
+					titleZh: rowString(row, "title_zh"),
+					titleEn: rowString(row, "title_en"),
+					summaryZh: rowString(row, "summary_zh"),
+					summaryEn: rowString(row, "summary_en"),
+					type: rowString(row, "topic_type") as NewsTopic["type"],
+					status: rowString(row, "status") as NewsTopic["status"],
+					revision: rowNumber(row, "revision"),
+					organizationIds: [],
+					organizationSet: new Set<string>(),
+					firstSeenAt: rowString(row, "first_seen_at"),
+					lastUpdatedAt: rowString(row, "last_updated_at"),
+					sourcePosts: [],
+					postIds: new Set<string>(),
+				};
+				documents.set(topicId, document);
+			}
+			const organizationId = nullableString(row, "organization_id");
+			if (organizationId && !document.organizationSet.has(organizationId)) {
+				document.organizationSet.add(organizationId);
+				document.organizationIds.push(organizationId);
+			}
+			const postId = rowString(row, "post_id");
+			if (!document.postIds.has(postId)) {
+				document.postIds.add(postId);
+				document.sourcePosts.push({
+					xPostId: rowString(row, "x_post_id"),
+					publishedAt: rowString(row, "published_at"),
+					publisherHandle: rowString(row, "publisher_handle"),
+					content: rowString(row, "content"),
+					rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json, {}),
+				});
+			}
+		}
+		return [...documents.values()].map(({ organizationSet: _, postIds: __, ...document }) => document);
 	}
 
 	listActiveTopics(since: string): NewsTopic[] {
