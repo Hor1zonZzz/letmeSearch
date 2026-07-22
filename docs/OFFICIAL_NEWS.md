@@ -174,7 +174,9 @@ npm run news:metrics
 - 连续两次增长率低于 5%，或 Topic 下所有 Post 都超过 72 小时，停止刷新；
 - 单条指标请求失败不会写入零值，也不会推进低增长计数。
 
-完整算法说明见 [`TOPIC_HEAT_DESIGN.md`](./TOPIC_HEAT_DESIGN.md)。
+人类可读的交互式图解见 [`TOPIC_HEAT_EXPLAINER.html`](./TOPIC_HEAT_EXPLAINER.html)，
+可以修改示例数据并实时查看热度计算；工程设计说明见
+[`TOPIC_HEAT_DESIGN.md`](./TOPIC_HEAT_DESIGN.md)。
 
 ## 重复 Topic 人工复核
 
